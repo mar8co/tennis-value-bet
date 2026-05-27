@@ -11,11 +11,25 @@ cover the derived markets (total games, handicap, set, tie-break, breaks).
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 
 import requests
 
 _BASE = "https://api.the-odds-api.com/v4"
+
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_RETRY_DELAYS = (2, 4, 8, 16)
+
+
+def _get_with_retry(url: str, params: dict, timeout: int = 20) -> requests.Response:
+    """GET with exponential-backoff retry on transient errors (429, 5xx)."""
+    for attempt, delay in enumerate((*_RETRY_DELAYS, None)):
+        resp = requests.get(url, params=params, timeout=timeout)
+        if resp.status_code not in _RETRY_STATUSES or delay is None:
+            return resp
+        time.sleep(delay)
+    return resp
 
 
 @dataclass
@@ -69,8 +83,8 @@ def _resolve_key(api_key: str | None) -> str:
 
 def list_tennis_sports(api_key: str | None = None) -> list:
     """Active tennis sport keys (listing sports does not cost a credit)."""
-    resp = requests.get(f"{_BASE}/sports",
-                        params={"apiKey": _resolve_key(api_key)}, timeout=20)
+    resp = _get_with_retry(f"{_BASE}/sports",
+                           params={"apiKey": _resolve_key(api_key)})
     resp.raise_for_status()
     return [s["key"] for s in resp.json()
             if str(s.get("key", "")).startswith("tennis_")]
@@ -144,11 +158,10 @@ def fetch_tennis_odds(api_key: str | None = None,
     key = _resolve_key(api_key)
     out = []
     for sport in list_tennis_sports(key):
-        resp = requests.get(
+        resp = _get_with_retry(
             f"{_BASE}/sports/{sport}/odds",
             params={"apiKey": key, "regions": regions,
-                    "markets": "h2h,totals,spreads", "oddsFormat": "decimal"},
-            timeout=20)
+                    "markets": "h2h,totals,spreads", "oddsFormat": "decimal"})
         if resp.status_code != 200:
             continue
         for ev in resp.json():

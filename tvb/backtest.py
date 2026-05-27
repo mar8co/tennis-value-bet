@@ -132,17 +132,27 @@ def calibration_table(p, y, bins: int = 10) -> pd.DataFrame:
 
 def betting_simulation(records: pd.DataFrame, min_ev: float = 0.0,
                        stake: float = 1.0) -> dict:
-    """Flat-stake bet on every selection whose model EV exceeds `min_ev`."""
+    """Flat-stake bet on the best side of each market that exceeds `min_ev`.
+
+    At most one side per match is bet: if both sides show positive EV (a sign
+    of large model disagreement with the book), only the higher-EV side is
+    taken.  Betting both sides of the same binary market guarantees a loss
+    when odds are margined.
+    """
     n, staked, profit = 0, 0.0, 0.0
     for r in records.itertuples(index=False):
         if not (np.isfinite(r.odds_a) and np.isfinite(r.odds_b)):
             continue
-        for p_model, odds, won in ((r.p_model, r.odds_a, r.y == 1),
-                                   (1.0 - r.p_model, r.odds_b, r.y == 0)):
-            if expected_value(p_model, odds) > min_ev:
-                n += 1
-                staked += stake
-                profit += stake * (odds - 1.0) if won else -stake
+        sides = (
+            (r.p_model,       r.odds_a, r.y == 1),
+            (1.0 - r.p_model, r.odds_b, r.y == 0),
+        )
+        best = max(sides, key=lambda t: expected_value(t[0], t[1]))
+        p_model, odds, won = best
+        if expected_value(p_model, odds) > min_ev:
+            n += 1
+            staked += stake
+            profit += stake * (odds - 1.0) if won else -stake
     return {"n_bets": n, "staked": staked, "profit": profit,
             "roi": profit / staked if staked else 0.0}
 

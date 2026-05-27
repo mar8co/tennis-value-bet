@@ -10,9 +10,17 @@ import requests
 from .config import (DB_PATH, PROCESSED_DIR, RAW_DIR, SACKMANN_REPOS,
                      TENNIS_DATA_URL)
 
+_VALID_TOURS = frozenset({"atp", "wta"})
+
+
+def _check_tour(tour: str) -> None:
+    if tour not in _VALID_TOURS:
+        raise ValueError(f"tour must be one of {_VALID_TOURS}, got {tour!r}")
+
 
 def download_matches(tour: str = "atp", years=range(2020, 2025)) -> list:
     """Download {tour}_matches_YYYY.csv files into data/raw."""
+    _check_tour(tour)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     base = SACKMANN_REPOS[tour]
     saved = []
@@ -21,7 +29,7 @@ def download_matches(tour: str = "atp", years=range(2020, 2025)) -> list:
         dest = RAW_DIR / fname
         try:
             df = pd.read_csv(f"{base}/{fname}")
-        except Exception as exc:               # network / missing file
+        except (requests.RequestException, pd.errors.ParserError) as exc:
             print(f"  skip {fname}: {exc}")
             continue
         df.to_csv(dest, index=False)
@@ -32,6 +40,7 @@ def download_matches(tour: str = "atp", years=range(2020, 2025)) -> list:
 
 def load_to_db(tour: str = "atp") -> int:
     """Concatenate downloaded CSVs for a tour into a SQLite `{tour}_matches` table."""
+    _check_tour(tour)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     files = sorted(RAW_DIR.glob(f"{tour}_matches_*.csv"))
     if not files:
@@ -45,8 +54,10 @@ def load_to_db(tour: str = "atp") -> int:
 
 def read_matches(tour: str = "atp") -> pd.DataFrame:
     """Read the stored matches table for a tour."""
+    _check_tour(tour)
     with sqlite3.connect(DB_PATH) as conn:
-        return pd.read_sql(f"SELECT * FROM {tour}_matches", conn)
+        table = f"{tour}_matches"
+        return pd.read_sql(f"SELECT * FROM {table}", conn)  # noqa: S608
 
 
 # ----------------------- Tennis-Data.co.uk historical odds ------------------
@@ -58,6 +69,7 @@ _ODDS_COLUMNS = ["Date", "Surface", "Round", "Winner", "Loser", "Comment",
 
 def download_tennis_data(tour: str = "atp", years=range(2021, 2027)) -> list:
     """Download Tennis-Data.co.uk season files (results + closing odds)."""
+    _check_tour(tour)
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     suffix = "" if tour == "atp" else "w"
     saved = []
@@ -67,7 +79,7 @@ def download_tennis_data(tour: str = "atp", years=range(2021, 2027)) -> list:
         try:
             resp = requests.get(url, timeout=60)
             resp.raise_for_status()
-        except Exception as exc:               # network / missing file
+        except (requests.RequestException, pd.errors.ParserError) as exc:
             print(f"  skip {year}: {exc}")
             continue
         dest.write_bytes(resp.content)
@@ -78,6 +90,7 @@ def download_tennis_data(tour: str = "atp", years=range(2021, 2027)) -> list:
 
 def load_oddshist_to_db(tour: str = "atp") -> int:
     """Concatenate downloaded Tennis-Data files into a `{tour}_oddshist` table."""
+    _check_tour(tour)
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     files = sorted(RAW_DIR.glob(f"{tour}_odds_*.xlsx"))
     if not files:
@@ -96,7 +109,9 @@ def load_oddshist_to_db(tour: str = "atp") -> int:
 
 def read_oddshist(tour: str = "atp") -> pd.DataFrame:
     """Read the stored Tennis-Data odds/results table, with parsed dates."""
+    _check_tour(tour)
     with sqlite3.connect(DB_PATH) as conn:
-        df = pd.read_sql(f"SELECT * FROM {tour}_oddshist", conn)
+        table = f"{tour}_oddshist"
+        df = pd.read_sql(f"SELECT * FROM {table}", conn)  # noqa: S608
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     return df

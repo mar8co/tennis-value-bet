@@ -48,5 +48,6 @@ def matchup_serve_probs(spw_a: float, rpw_a: float,
     league_rpw = 1.0 - league
     p_a = league + (spw_a - league) - (rpw_b - league_rpw)
     p_b = league + (spw_b - league) - (rpw_a - league_rpw)
-    clamp = lambda x: min(max(x, 0.40), 0.85)
-    return clamp(p_a), clamp(p_b)
+    def _clamp(x: float) -> float:
+        return min(max(x, 0.40), 0.85)
+    return _clamp(p_a), _clamp(p_b)

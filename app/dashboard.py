@@ -165,6 +165,8 @@ def _apply_live_odds():
 
     st.session_state["mw0"] = c(m.odds1)
     st.session_state["mw1"] = c(m.odds2)
+    _, _, bo = match_context(m.sport_key)
+    st.session_state["best_of"] = bo
     if m.total_line is not None:
         st.session_state["ltg"] = round(min(max(m.total_line, 10.0), 40.0), 1)
         st.session_state["ov"] = c(m.over_odds)
@@ -206,7 +208,8 @@ def _fetch_matches():
 # ----------------------------------------- session-state defaults
 for _k, _v in (("mw0", 1.55), ("mw1", 2.45), ("ltg", 22.5), ("ov", 1.92),
                ("un", 1.88), ("lh", -3.5), ("h0", 1.90), ("h1", 1.90),
-               ("s10", 1.62), ("s11", 2.30), ("tby", 2.40), ("tbn", 1.55)):
+               ("s10", 1.62), ("s11", 2.30), ("tby", 2.40), ("tbn", 1.55),
+               ("best_of", 3)):
     st.session_state.setdefault(_k, _v)
 
 if "live_matches" not in st.session_state and _api_key():
@@ -225,18 +228,13 @@ st.caption("Analisi value-bet sui match di oggi · modello di simulazione "
 with st.sidebar:
     st.header("Impostazioni")
 
-    bo_default = 3
-    _live_now = (st.session_state.get("live_matches") or {}).get(
-        st.session_state.get("live_sel"))
-    if _live_now is not None:
-        _, _, bo_default = match_context(_live_now.sport_key)
     best_of = st.radio("Formato match", [3, 5], horizontal=True,
-                       index=(1 if bo_default == 5 else 0),
-                       help="Si imposta in automatico dal torneo del match "
+                       key="best_of",
+                       help="Si aggiorna automaticamente al torneo del match "
                             "live selezionato.")
     n_sims = st.select_slider("Simulazioni Monte Carlo",
                               options=[2000, 5000, 10000, 20000, 50000],
-                              value=20000)
+                              value=config.N_SIMS)
     min_edge = st.slider("Edge minimo per value bet", 0.0, 0.15,
                          config.MIN_EDGE, 0.01)
     min_prob = st.slider("Probabilità minima vittoria", 0.40, 0.80, 0.55,
@@ -324,6 +322,12 @@ st.markdown(
     f'font-size:.95em">Vedi punteggio live ↗</a>',
     unsafe_allow_html=True)
 
+
+if tour == "wta" and recalibrate:
+    st.warning(
+        "**WTA match**: le correzioni di ricalibrazione sono state "
+        "validate su dati ATP. Su WTA sono un'approssimazione — "
+        "considera di disattivarle (Impostazioni → Ricalibrazione validata).")
 
 # ------------------------------------------------------------ quote section
 st.subheader("Quote bookmaker")
