@@ -1,0 +1,7 @@
+[theme]
+base = "light"
+backgroundColor = "#fffeef"
+secondaryBackgroundColor = "#f5edd6"
+primaryColor = "#c1440e"
+textColor = "#242326"
+font = "Plus Jakarta Sans"

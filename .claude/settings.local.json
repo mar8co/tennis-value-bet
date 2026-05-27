@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:\\\\Users\\\\LENOVO\\\\Desktop\\\\tennis-value-bet-main\" status)",
+      "Bash(Get-Item \"c:\\\\Users\\\\LENOVO\\\\Desktop\\\\codereviewimprovements.patch\")",
+      "Bash(Select-Object Name, Length)",
+      "Bash(ls -la \"/c/Users/LENOVO/Desktop/codereviewimprovements.patch\" 2>&1)",
+      "Read(//c/Users/LENOVO/Desktop/**)",
+      "Bash(git config *)",
+      "Bash(gh auth *)",
+      "Bash(git ls-remote *)"
+    ]
+  }
+}
