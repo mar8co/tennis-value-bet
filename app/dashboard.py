@@ -35,8 +35,8 @@ from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
 try:
     from tvb.bet_tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                                  get_pending_bets, log_bet, performance_stats,
-                                  update_results)
+                                  get_pending_bets, log_bet, manual_resolve_bet,
+                                  performance_stats, scores_debug, update_results)
     _TRACKER_OK = True
     _TRACKER_ERR = ""
 except Exception as _e:
@@ -53,6 +53,8 @@ except Exception as _e:
     def get_pending_bets(tour=""): import pandas as pd; return pd.DataFrame()
     def performance_stats(tour=""): return {"n_pending":0,"n_resolved":0,"n_won":0,"n_lost":0,"win_rate":0.0,"total_staked":0.0,"total_profit":0.0,"roi":0.0}
     def update_results(key): return 0
+    def manual_resolve_bet(bet_id, result): return False
+    def scores_debug(api_key): return []
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -670,6 +672,31 @@ with tab_perf:
                 "Quota": st.column_config.NumberColumn(format="%.2f"),
             })
 
+    # ---- manual result entry
+    if not _pending.empty:
+        with st.expander("✏️ Inserisci risultato manualmente"):
+            st.caption(
+                "Se l'aggiornamento automatico non funziona per un match, "
+                "puoi segnare il risultato qui. Il P&L viene calcolato in base "
+                "alla quota e allo stake registrati.")
+            _opts = {
+                f"{r.player1} vs {r.player2} · {r.market} · {r.selection} "
+                f"@{r.odds:.2f} [id={r.id}]": int(r.id)
+                for r in _pending.itertuples(index=False)
+            }
+            _sel_label = st.selectbox("Seleziona bet", list(_opts.keys()),
+                                      key="_manual_bet_sel")
+            _sel_result = st.radio("Risultato", ["won ✅", "lost ❌"],
+                                   horizontal=True, key="_manual_bet_res")
+            if st.button("Conferma risultato", key="_manual_bet_btn"):
+                _bid = _opts[_sel_label]
+                _res = "won" if _sel_result.startswith("won") else "lost"
+                if manual_resolve_bet(_bid, _res):
+                    st.success(f"Bet #{_bid} segnata come **{_res}**.")
+                    st.rerun()
+                else:
+                    st.error("Errore durante l'aggiornamento.")
+
     stats = performance_stats(tour=_tf)
     n_resolved = stats["n_resolved"]
     n_scanned = len(st.session_state.get("_scanned_match_ids", set()))
@@ -740,6 +767,32 @@ with tab_perf:
                     "Profitto netto (€)": st.column_config.NumberColumn(
                         "Profitto netto (€)", format="€ %.2f"),
                 })
+
+    # ---- scores API debug
+    st.divider()
+    with st.expander("🔍 Debug: stato aggiornamento automatico risultati"):
+        st.caption(
+            "Mostra cosa restituisce The Odds API Scores per le bet in attesa. "
+            "Utile per capire perché i risultati non si aggiornano.")
+        if _key:
+            if st.button("Controlla scores API ora", key="_dbg_scores_btn"):
+                with st.spinner("Interrogo scores API..."):
+                    _dbg = scores_debug(_key)
+                if not _dbg:
+                    st.info("Nessuna bet pending o sport_key non trovato.")
+                for _d in _dbg:
+                    st.markdown(
+                        f"**`{_d['sport_key']}`** — "
+                        f"{_d['total_events']} eventi · "
+                        f"{_d['completed']} completati · "
+                        f"**{_d['matched_pending']} corrispondono alle bet salvate**")
+                    for _s in _d["sample_completed"]:
+                        st.markdown(
+                            f"- `{_s['p1']}` vs `{_s['p2']}` · "
+                            f"`{_s['ct']}` · scores={_s['scores']} · "
+                            f"winner=`{_s['winner']}`")
+        else:
+            st.warning("Chiave API non configurata.")
 
     # ---- full history
     st.divider()

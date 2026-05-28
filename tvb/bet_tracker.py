@@ -236,7 +236,7 @@ def _winner_from_scores(scores: list) -> str | None:
             return scores[0]["name"]
         if s1 > s0:
             return scores[1]["name"]
-    except (ValueError, KeyError):
+    except (ValueError, KeyError, TypeError):
         pass
     return None
 
@@ -375,6 +375,74 @@ def accuracy_by_player(tour: str = "") -> pd.DataFrame:
     g["% Accuratezza"] = (g["% Accuratezza"] * 100).round(1)
     g["Profitto netto (€)"] = g["Profitto netto (€)"].round(2)
     return g.sort_values("% Accuratezza", ascending=False).reset_index(drop=True)
+
+
+def manual_resolve_bet(bet_id: int, result: str) -> bool:
+    """Manually mark a pending bet as won or lost. Returns True on success."""
+    if result not in ("won", "lost"):
+        raise ValueError(f"result must be 'won' or 'lost', got {result!r}")
+    init_tracker_db()
+    row_df = _read("SELECT odds, stake FROM bets WHERE id = :id AND result = 'pending'",
+                   {"id": bet_id})
+    if row_df.empty:
+        return False
+    row = row_df.iloc[0]
+    profit = float(row["stake"]) * (float(row["odds"]) - 1.0) if result == "won" else -float(row["stake"])
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        if _SA:
+            with _engine().begin() as conn:
+                conn.execute(
+                    _sa_text("UPDATE bets SET result=:r, profit=:p, resolved_at=:ra WHERE id=:id"),
+                    {"r": result, "p": profit, "ra": now, "id": bet_id})
+        else:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.execute(
+                    "UPDATE bets SET result=?, profit=?, resolved_at=? WHERE id=?",
+                    (result, profit, now, bet_id))
+        return True
+    except Exception:
+        return False
+
+
+def scores_debug(api_key: str) -> list[dict]:
+    """Return raw debug info from the scores API for pending sport keys."""
+    init_tracker_db()
+    pending = _read(
+        "SELECT DISTINCT sport_key, player1, player2, commence_time "
+        "FROM bets WHERE result = 'pending'")
+    if pending.empty:
+        return []
+    out = []
+    for sport_key in pending["sport_key"].unique():
+        if not sport_key:
+            continue
+        events = _fetch_scores(sport_key, api_key, days_from=3)
+        completed = [e for e in events if e.get("completed")]
+        matched = 0
+        for ev in completed:
+            p1 = ev.get("home_team", "")
+            p2 = ev.get("away_team", "")
+            ct = ev.get("commence_time", "")
+            mask = ((pending["commence_time"] == ct) &
+                    (pending["player1"] == p1) &
+                    (pending["player2"] == p2))
+            if mask.any():
+                matched += 1
+        out.append({
+            "sport_key": sport_key,
+            "total_events": len(events),
+            "completed": len(completed),
+            "matched_pending": matched,
+            "sample_completed": [
+                {"p1": e.get("home_team"), "p2": e.get("away_team"),
+                 "ct": e.get("commence_time"),
+                 "scores": e.get("scores"),
+                 "winner": _winner_from_scores(e.get("scores") or [])}
+                for e in completed[:5]
+            ],
+        })
+    return out
 
 
 def equity_curve(tour: str = "") -> pd.DataFrame:
