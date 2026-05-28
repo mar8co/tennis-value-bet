@@ -241,8 +241,19 @@ def _winner_from_scores(scores: list) -> str | None:
     return None
 
 
-def update_results(api_key: str) -> int:
-    """Fetch completed scores and resolve pending Match winner bets."""
+def _ct_key(ct: str) -> str:
+    """Normalize a commence_time string for loose comparison."""
+    return ct.replace("Z", "").replace("+00:00", "").strip()
+
+
+def _names_match(a: str, b: str) -> bool:
+    """True if names are identical or one contains the other (handles abbreviations)."""
+    a, b = a.strip().lower(), b.strip().lower()
+    return a == b or a in b or b in a
+
+
+def update_results(api_key: str, days_from: int = 3) -> int:
+    """Fetch completed scores and resolve pending bets (Match winner only from API)."""
     init_tracker_db()
     pending = _read(
         "SELECT DISTINCT sport_key, player1, player2, commence_time, match_id "
@@ -253,7 +264,7 @@ def update_results(api_key: str) -> int:
     for sport_key in pending["sport_key"].unique():
         if not sport_key:
             continue
-        for event in _fetch_scores(sport_key, api_key):
+        for event in _fetch_scores(sport_key, api_key, days_from=days_from):
             if not event.get("completed"):
                 continue
             p1 = event.get("home_team", "")
@@ -262,24 +273,35 @@ def update_results(api_key: str) -> int:
             winner = _winner_from_scores(event.get("scores") or [])
             if not winner:
                 continue
+            # 1) exact match
             mask = ((pending["commence_time"] == ct) &
                     (pending["player1"] == p1) &
                     (pending["player2"] == p2))
             if not mask.any():
+                # 2) fuzzy: normalised timestamp + partial name
+                ct_k = _ct_key(ct)
+                mask = pending.apply(
+                    lambda r: (
+                        _ct_key(r["commence_time"]) == ct_k and
+                        _names_match(r["player1"], p1) and
+                        _names_match(r["player2"], p2)
+                    ), axis=1)
+            if not mask.any():
                 continue
             match_id = pending.loc[mask, "match_id"].iloc[0]
-            resolved += _resolve_match(match_id, winner)
+            resolved += _resolve_match(match_id, winner, total_games=None)
     return resolved
 
 
-def _resolve_match(match_id: str, winner: str) -> int:
+def _resolve_match(match_id: str, winner: str,
+                   total_games: int | None = None) -> int:
     count = 0
     bets = _read(
         "SELECT id, market, selection, odds, stake FROM bets "
         "WHERE match_id = :mid AND result = 'pending'",
         {"mid": match_id})
     for row in bets.itertuples(index=False):
-        won = _evaluate_bet(row.market, row.selection, winner)
+        won = _evaluate_bet(row.market, row.selection, winner, total_games)
         if won is None:
             continue
         profit = row.stake * (row.odds - 1.0) if won else -row.stake
@@ -300,10 +322,43 @@ def _resolve_match(match_id: str, winner: str) -> int:
     return count
 
 
-def _evaluate_bet(market: str, selection: str, winner: str) -> bool | None:
+def _evaluate_bet(market: str, selection: str, winner: str,
+                  total_games: int | None = None) -> bool | None:
     if market == "Match winner":
         return selection == winner
+    if market == "Total games" and total_games is not None:
+        parts = selection.split(None, 1)
+        if len(parts) == 2:
+            direction, line_str = parts
+            try:
+                line = float(line_str)
+                if direction == "Over":
+                    return total_games > line
+                if direction == "Under":
+                    return total_games < line
+            except ValueError:
+                pass
     return None
+
+
+def get_pending_matches(tour: str = "") -> pd.DataFrame:
+    """Unique pending matches with bet counts, ordered by commence_time."""
+    init_tracker_db()
+    tc = "AND tour = :tour" if tour else ""
+    p = {"tour": tour} if tour else {}
+    return _read(
+        f"SELECT match_id, player1, player2, commence_time, tour, sport_key, "
+        f"COUNT(*) as n_bets "
+        f"FROM bets WHERE result = 'pending' {tc} "
+        f"GROUP BY match_id, player1, player2, commence_time, tour, sport_key "
+        f"ORDER BY commence_time", p)
+
+
+def resolve_match_manual(match_id: str, winner: str,
+                          total_games: int | None = None) -> int:
+    """Bulk-resolve all pending bets for a match. Returns count resolved."""
+    init_tracker_db()
+    return _resolve_match(match_id, winner, total_games=total_games)
 
 
 # ── analytics ──────────────────────────────────────────────────────────────────

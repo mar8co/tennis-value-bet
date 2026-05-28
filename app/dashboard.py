@@ -35,8 +35,8 @@ from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
 try:
     from tvb.bet_tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                                  get_pending_bets, log_bet, performance_stats,
-                                  update_results)
+                                  get_pending_bets, get_pending_matches, log_bet,
+                                  performance_stats, update_results)
     _TRACKER_OK = True
     _TRACKER_ERR = ""
 except Exception as _e:
@@ -54,13 +54,16 @@ except Exception as _e:
     def performance_stats(tour=""): return {"n_pending":0,"n_resolved":0,"n_won":0,"n_lost":0,"win_rate":0.0,"total_staked":0.0,"total_profit":0.0,"roi":0.0}
     def update_results(key): return 0
 
-# These two were added later; import separately so a stale cache on the above
+# These were added later; import separately so a stale cache on the above
 # functions doesn't break the entire tracker.
 try:
-    from tvb.bet_tracker import manual_resolve_bet, scores_debug
+    from tvb.bet_tracker import (manual_resolve_bet, resolve_match_manual,
+                                  scores_debug, get_pending_matches)
 except Exception:
     def manual_resolve_bet(bet_id, result): return False  # type: ignore[misc]
+    def resolve_match_manual(match_id, winner, total_games=None): return 0  # type: ignore[misc]
     def scores_debug(api_key): return []  # type: ignore[misc]
+    def get_pending_matches(tour=""): import pandas as pd; return pd.DataFrame()  # type: ignore[misc]
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -678,30 +681,45 @@ with tab_perf:
                 "Quota": st.column_config.NumberColumn(format="%.2f"),
             })
 
-    # ---- manual result entry
-    if not _pending.empty:
-        with st.expander("✏️ Inserisci risultato manualmente"):
+    # ---- per-match manual resolution
+    _pending_matches = get_pending_matches(tour=_tf)
+    if not _pending_matches.empty:
+        with st.expander("✏️ Inserisci risultato partita"):
             st.caption(
-                "Se l'aggiornamento automatico non funziona per un match, "
-                "puoi segnare il risultato qui. Il P&L viene calcolato in base "
-                "alla quota e allo stake registrati.")
-            _opts = {
-                f"{r.player1} vs {r.player2} · {r.market} · {r.selection} "
-                f"@{r.odds:.2f} [id={r.id}]": int(r.id)
-                for r in _pending.itertuples(index=False)
+                "Risolve in un colpo solo **tutte** le giocate di una partita "
+                "(Match winner + Total games se indichi i game totali). "
+                "Usa questa sezione quando l'aggiornamento automatico non trova i dati.")
+            _match_opts = {
+                f"{r.player1} vs {r.player2}  "
+                f"[{(_parse_dt(r.commence_time) or '').astimezone(_LOCAL_TZ).strftime('%d/%m %H:%M') if _parse_dt(r.commence_time) else r.commence_time}]"
+                f"  — {r.n_bets} bet": r.match_id
+                for r in _pending_matches.itertuples(index=False)
             }
-            _sel_label = st.selectbox("Seleziona bet", list(_opts.keys()),
-                                      key="_manual_bet_sel")
-            _sel_result = st.radio("Risultato", ["won ✅", "lost ❌"],
-                                   horizontal=True, key="_manual_bet_res")
-            if st.button("Conferma risultato", key="_manual_bet_btn"):
-                _bid = _opts[_sel_label]
-                _res = "won" if _sel_result.startswith("won") else "lost"
-                if manual_resolve_bet(_bid, _res):
-                    st.success(f"Bet #{_bid} segnata come **{_res}**.")
+            _msel = st.selectbox("Partita", list(_match_opts.keys()),
+                                 key="_manual_match_sel")
+            _mrow = _pending_matches.loc[
+                _pending_matches["match_id"] == _match_opts[_msel]].iloc[0]
+            _wcol, _gcol = st.columns([1, 1])
+            _winner_choice = _wcol.radio(
+                "Vincitore",
+                [_mrow["player1"], _mrow["player2"]],
+                key="_manual_winner")
+            _total_g = _gcol.number_input(
+                "Game totali (opzionale — per Total games)",
+                min_value=0, max_value=200, value=0, step=1,
+                help="Somma di tutti i game giocati nel match (es. 6-3 6-4 = 19). "
+                     "Lascia 0 se vuoi risolvere solo il Match winner.",
+                key="_manual_total_g")
+            if st.button("✅ Conferma e risolvi", key="_manual_match_btn",
+                         type="primary"):
+                _tg = int(_total_g) if _total_g > 0 else None
+                _n = resolve_match_manual(_match_opts[_msel], _winner_choice,
+                                          total_games=_tg)
+                if _n:
+                    st.success(f"Risolte **{_n} giocate** per questo match.")
                     st.rerun()
                 else:
-                    st.error("Errore durante l'aggiornamento.")
+                    st.warning("Nessuna giocata aggiornata — verifica i dati.")
 
     stats = performance_stats(tour=_tf)
     n_resolved = stats["n_resolved"]
@@ -815,24 +833,25 @@ with tab_perf:
     with st.expander("🔍 Debug: stato aggiornamento automatico risultati"):
         st.caption(
             "Mostra cosa restituisce The Odds API Scores per le bet in attesa. "
-            "Utile per capire perché i risultati non si aggiornano.")
+            "Se 'completati = 0' il problema è la copertura API, usa il modulo "
+            "manuale qui sopra.")
         if _key:
-            if st.button("Controlla scores API ora", key="_dbg_scores_btn"):
-                with st.spinner("Interrogo scores API..."):
-                    _dbg = scores_debug(_key)
-                if not _dbg:
-                    st.info("Nessuna bet pending o sport_key non trovato.")
-                for _d in _dbg:
+            with st.spinner("Interrogo scores API..."):
+                _dbg = scores_debug(_key)
+            if not _dbg:
+                st.info("Nessuna bet pending con sport_key valido.")
+            for _d in _dbg:
+                _ok = _d["matched_pending"] > 0
+                (_st_fn := st.success if _ok else st.warning)(
+                    f"**`{_d['sport_key']}`** — "
+                    f"{_d['total_events']} eventi recuperati · "
+                    f"{_d['completed']} completati · "
+                    f"**{_d['matched_pending']} corrispondono alle bet nel DB**")
+                for _s in _d["sample_completed"]:
                     st.markdown(
-                        f"**`{_d['sport_key']}`** — "
-                        f"{_d['total_events']} eventi · "
-                        f"{_d['completed']} completati · "
-                        f"**{_d['matched_pending']} corrispondono alle bet salvate**")
-                    for _s in _d["sample_completed"]:
-                        st.markdown(
-                            f"- `{_s['p1']}` vs `{_s['p2']}` · "
-                            f"`{_s['ct']}` · scores={_s['scores']} · "
-                            f"winner=`{_s['winner']}`")
+                        f"- `{_s['p1']}` vs `{_s['p2']}` · "
+                        f"`{_s['ct']}` · scores={_s['scores']} · "
+                        f"winner=`{_s['winner']}`")
         else:
             st.warning("Chiave API non configurata.")
 
