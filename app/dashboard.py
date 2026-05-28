@@ -35,8 +35,8 @@ from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
 try:
     from tvb.bet_tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                                  get_pending_bets, log_bet, manual_resolve_bet,
-                                  performance_stats, scores_debug, update_results)
+                                  get_pending_bets, log_bet, performance_stats,
+                                  update_results)
     _TRACKER_OK = True
     _TRACKER_ERR = ""
 except Exception as _e:
@@ -53,8 +53,14 @@ except Exception as _e:
     def get_pending_bets(tour=""): import pandas as pd; return pd.DataFrame()
     def performance_stats(tour=""): return {"n_pending":0,"n_resolved":0,"n_won":0,"n_lost":0,"win_rate":0.0,"total_staked":0.0,"total_profit":0.0,"roi":0.0}
     def update_results(key): return 0
-    def manual_resolve_bet(bet_id, result): return False
-    def scores_debug(api_key): return []
+
+# These two were added later; import separately so a stale cache on the above
+# functions doesn't break the entire tracker.
+try:
+    from tvb.bet_tracker import manual_resolve_bet, scores_debug
+except Exception:
+    def manual_resolve_bet(bet_id, result): return False  # type: ignore[misc]
+    def scores_debug(api_key): return []  # type: ignore[misc]
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
