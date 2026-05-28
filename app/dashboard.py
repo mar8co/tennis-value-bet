@@ -34,9 +34,9 @@ from tvb.ratings import find_player_id, matchup_probs, player_names
 from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
 try:
-    from tvb.tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                              get_pending_bets, log_bet, performance_stats,
-                              update_results)
+    from tvb.bet_tracker import (accuracy_by_player, equity_curve, get_bets_df,
+                                  get_pending_bets, log_bet, performance_stats,
+                                  update_results)
     _TRACKER_OK = True
     _TRACKER_ERR = ""
 except Exception as _e:
