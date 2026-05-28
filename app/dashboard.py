@@ -33,9 +33,26 @@ from tvb.pipeline import evaluate_match, rank_value_bets
 from tvb.ratings import find_player_id, matchup_probs, player_names
 from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
-from tvb.tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                          get_pending_bets, log_bet, performance_stats,
-                          update_results)
+try:
+    from tvb.tracker import (accuracy_by_player, equity_curve, get_bets_df,
+                              get_pending_bets, log_bet, performance_stats,
+                              update_results)
+    _TRACKER_OK = True
+    _TRACKER_ERR = ""
+except Exception as _e:
+    _TRACKER_OK = False
+    _TRACKER_ERR = str(_e)
+
+    def _noop(*a, **kw):  # stub so the rest of the file doesn't NameError
+        return False
+    log_bet = _noop
+
+    def accuracy_by_player(tour=""): import pandas as pd; return pd.DataFrame()
+    def equity_curve(tour=""): import pandas as pd; return pd.DataFrame()
+    def get_bets_df(tour=""): import pandas as pd; return pd.DataFrame()
+    def get_pending_bets(tour=""): import pandas as pd; return pd.DataFrame()
+    def performance_stats(tour=""): return {"n_pending":0,"n_resolved":0,"n_won":0,"n_lost":0,"win_rate":0.0,"total_staked":0.0,"total_profit":0.0,"roi":0.0}
+    def update_results(key): return 0
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -572,6 +589,10 @@ with tab_perf:
         "positivo viene registrata con stake simulato di **€10** (Match winner, "
         "Total games e Handicap). I risultati vengono aggiornati via "
         "The Odds API Scores.")
+
+    if not _TRACKER_OK:
+        st.error(f"⚠️ Tracker non disponibile — errore di importazione:\n\n`{_TRACKER_ERR}`")
+        st.stop()
 
     if not os.environ.get("DATABASE_URL"):
         st.info(
