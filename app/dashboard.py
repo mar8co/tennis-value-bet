@@ -726,6 +726,42 @@ with tab_perf:
     m5.metric("Stake totale",
               f"€ {stats['total_staked']:.0f}" if n_resolved else "—")
 
+    # ---- budget calculator
+    st.divider()
+    _b_left, _b_right = st.columns([1, 3])
+    _budget = _b_left.number_input(
+        "💰 Budget iniziale (€)",
+        min_value=10.0, max_value=1_000_000.0,
+        value=float(st.session_state.get("_user_budget", 200.0)),
+        step=10.0, format="%.0f",
+        help="Il tuo bankroll di partenza. Usato per calcolare il bankroll attuale "
+             "e quante giocate puoi ancora fare.",
+        key="_user_budget")
+    _bankroll = _budget + profit
+    _growth_pct = (profit / _budget * 100) if _budget else 0.0
+    _staked_pct = (stats["total_staked"] / _budget * 100) if _budget else 0.0
+    _bets_avail = max(0, int(_bankroll / 10))
+    _bm1, _bm2, _bm3, _bm4 = _b_right.columns(4)
+    _bm1.metric(
+        "Bankroll attuale",
+        f"€ {_bankroll:.2f}",
+        delta=f"{_growth_pct:+.1f}%" if n_resolved else None,
+        delta_color="normal")
+    _bm2.metric(
+        "P&L netto",
+        f"€ {profit:+.2f}" if n_resolved else "€ 0.00",
+        delta=f"{_growth_pct:+.1f}% sul budget" if n_resolved else None,
+        delta_color="normal")
+    _bm3.metric(
+        "Stake impegnato",
+        f"€ {stats['total_staked']:.0f}" if stats["total_staked"] else "€ 0",
+        delta=f"{_staked_pct:.1f}% del budget" if stats["total_staked"] else None,
+        delta_color="off")
+    _bm4.metric(
+        "Giocate disponibili",
+        str(_bets_avail),
+        help="Quante bet da €10 puoi ancora piazzare col bankroll attuale")
+
     if n_resolved == 0:
         if n_pending_display > 0:
             st.info(
