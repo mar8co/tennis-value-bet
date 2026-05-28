@@ -694,9 +694,18 @@ with tab_perf:
               f"€ {stats['total_staked']:.0f}" if n_resolved else "—")
 
     if n_resolved == 0:
-        st.info("Nessuna bet ancora risolta. Le proposte vengono registrate "
-                "automaticamente ogni volta che l'algoritmo genera value bet "
-                "nella tab **Analisi match**.")
+        if n_pending_display > 0:
+            st.info(
+                f"✅ **{n_pending_display} giocate salvate nel database** — "
+                "nessun match ancora terminato. I risultati verranno aggiornati "
+                "automaticamente appena le partite si concludono. "
+                "Le giocate già registrate non vengono mai modificate: "
+                "vengono solo aggiunte nuove bet.")
+        else:
+            st.info(
+                "Nessuna proposta ancora registrata. Le value bet vengono salvate "
+                "automaticamente al primo aggiornamento del palinsesto "
+                "(solo per i giocatori presenti nel database Sackmann).")
     else:
         # ---- equity curve
         st.divider()
