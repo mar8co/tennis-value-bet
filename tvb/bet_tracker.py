@@ -10,14 +10,16 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from datetime import datetime, timezone
+import unicodedata
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import requests
 
-from .config import DB_PATH
+from .config import DB_PATH, SACKMANN_REPOS
 
 _SCORES_BASE = "https://api.the-odds-api.com/v4"
+_SACK_CACHE: dict = {}   # {tour: (fetched_at, DataFrame)}
 
 # ── optional SQLAlchemy ────────────────────────────────────────────────────────
 try:
@@ -252,9 +254,108 @@ def _names_match(a: str, b: str) -> bool:
     return a == b or a in b or b in a
 
 
+# ── Sackmann-based result resolution ──────────────────────────────────────────
+def _norm_name(name: str) -> str:
+    s = unicodedata.normalize("NFKD", str(name))
+    return " ".join(
+        "".join(c for c in s if not unicodedata.combining(c))
+        .lower().replace("-", " ").split())
+
+
+def _surname(name: str) -> str:
+    parts = _norm_name(name).split()
+    return parts[-1] if parts else ""
+
+
+def _players_match(sw: str, sl: str, p1: str, p2: str) -> bool:
+    """True when Sackmann winner/loser surnames match both pending players."""
+    s1, s2 = _surname(sw), _surname(sl)
+    a, b = _surname(p1), _surname(p2)
+    return bool(s1 and s2 and a and b and
+                ((s1 == a and s2 == b) or (s1 == b and s2 == a)))
+
+
+def _total_from_score(score: str) -> int | None:
+    """Sum all games from Sackmann score, e.g. '6-3 7-5' → 21."""
+    try:
+        total = 0
+        for s in str(score).split():
+            nums = re.split(r"[-/]", s.split("(")[0])
+            if len(nums) == 2:
+                total += int(nums[0]) + int(nums[1])
+        return total if total > 0 else None
+    except Exception:
+        return None
+
+
+def _sackmann_recent(tour: str) -> pd.DataFrame:
+    """Download current-year Sackmann CSV; cached for 1 h to save bandwidth."""
+    cached = _SACK_CACHE.get(tour)
+    if cached:
+        ts, df = cached
+        if (datetime.now(timezone.utc) - ts).total_seconds() < 3600:
+            return df
+    year = datetime.now(timezone.utc).year
+    url = f"{SACKMANN_REPOS[tour]}/{tour}_matches_{year}.csv"
+    try:
+        df = pd.read_csv(url, usecols=lambda c: c in
+                         {"tourney_date", "winner_name", "loser_name", "score"})
+        cutoff = int(
+            (datetime.now(timezone.utc) - timedelta(days=21)).strftime("%Y%m%d"))
+        df = df[pd.to_numeric(df["tourney_date"], errors="coerce") >= cutoff]
+        df = df.dropna(subset=["winner_name", "loser_name"]).reset_index(drop=True)
+    except Exception:
+        df = pd.DataFrame()
+    _SACK_CACHE[tour] = (datetime.now(timezone.utc), df)
+    return df
+
+
+def _update_from_sackmann() -> int:
+    """Resolve pending bets using Sackmann GitHub results (free, no API quota)."""
+    pending = _read(
+        "SELECT DISTINCT tour, player1, player2, commence_time, match_id "
+        "FROM bets WHERE result = 'pending'")
+    if pending.empty:
+        return 0
+    resolved = 0
+    done: set = set()
+    for tour in ("atp", "wta"):
+        tp = pending[pending["tour"] == tour]
+        if tp.empty:
+            continue
+        recent = _sackmann_recent(tour)
+        if recent.empty:
+            continue
+        for srow in recent.itertuples(index=False):
+            sw = str(srow.winner_name)
+            sl = str(srow.loser_name)
+            tg = _total_from_score(getattr(srow, "score", ""))
+            for prow in tp.itertuples(index=False):
+                if prow.match_id in done:
+                    continue
+                if not _players_match(sw, sl, prow.player1, prow.player2):
+                    continue
+                db_winner = (prow.player1
+                             if _surname(sw) == _surname(prow.player1)
+                             else prow.player2)
+                n = _resolve_match(prow.match_id, db_winner, total_games=tg)
+                if n:
+                    resolved += n
+                    done.add(prow.match_id)
+                break
+    return resolved
+
+
 def update_results(api_key: str, days_from: int = 3) -> int:
-    """Fetch completed scores and resolve pending bets (Match winner only from API)."""
+    """Resolve pending bets: tries Odds API scores first, then Sackmann GitHub."""
     init_tracker_db()
+    total = _update_from_odds_api(api_key, days_from)
+    total += _update_from_sackmann()
+    return total
+
+
+def _update_from_odds_api(api_key: str, days_from: int) -> int:
+    """Resolve via The Odds API scores endpoint (Match winner only)."""
     pending = _read(
         "SELECT DISTINCT sport_key, player1, player2, commence_time, match_id "
         "FROM bets WHERE result = 'pending'")
@@ -273,12 +374,10 @@ def update_results(api_key: str, days_from: int = 3) -> int:
             winner = _winner_from_scores(event.get("scores") or [])
             if not winner:
                 continue
-            # 1) exact match
             mask = ((pending["commence_time"] == ct) &
                     (pending["player1"] == p1) &
                     (pending["player2"] == p2))
             if not mask.any():
-                # 2) fuzzy: normalised timestamp + partial name
                 ct_k = _ct_key(ct)
                 mask = pending.apply(
                     lambda r: (
