@@ -569,6 +569,12 @@ with tab_perf:
         "Total games e Handicap). I risultati vengono aggiornati via "
         "The Odds API Scores.")
 
+    if not os.environ.get("DATABASE_URL"):
+        st.info(
+            "💾 **Storico locale** · Su Streamlit Cloud i dati si perdono ad ogni "
+            "redeploy. Per uno storico permanente aggiungi `DATABASE_URL` nei "
+            "*Secrets* dell'app (es. Supabase o Neon — entrambi gratuiti).")
+
     # ---- auto-check results every 5 minutes
     _now = time.time()
     _last_check = st.session_state.get("_last_results_check", 0)
@@ -597,7 +603,14 @@ with tab_perf:
             f"Ultimo aggiornamento: "
             f"{datetime.fromtimestamp(_last_check, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
 
-    stats = performance_stats()
+    # ---- tour filter
+    st.divider()
+    _tour_sel = st.radio("Circuito", ["Tutti", "ATP", "WTA"],
+                         horizontal=True, index=0,
+                         help="Filtra tutte le statistiche per circuito")
+    _tf = "" if _tour_sel == "Tutti" else _tour_sel.lower()
+
+    stats = performance_stats(tour=_tf)
     n_resolved = stats["n_resolved"]
     n_scanned = len(st.session_state.get("_scanned_match_ids", set()))
 
@@ -628,12 +641,12 @@ with tab_perf:
         # ---- equity curve
         st.divider()
         st.markdown("#### Curva di equity (€ cumulati)")
-        eq = equity_curve()
+        eq = equity_curve(tour=_tf)
         if not eq.empty:
             st.line_chart(eq.set_index("Data")["Profitto cumulato (€)"],
                           use_container_width=True)
 
-        # ---- win/loss donut via progress bars
+        # ---- win/loss progress bars
         st.divider()
         st.markdown("#### Vittorie vs Sconfitte")
         wr = stats["win_rate"]
@@ -646,7 +659,7 @@ with tab_perf:
         # ---- accuracy by player
         st.divider()
         st.markdown("#### Accuratezza per giocatore / esito")
-        by_player = accuracy_by_player()
+        by_player = accuracy_by_player(tour=_tf)
         if not by_player.empty:
             st.dataframe(
                 by_player,
@@ -662,7 +675,7 @@ with tab_perf:
     # ---- full history
     st.divider()
     with st.expander("Storico completo delle bet"):
-        df_all = get_bets_df()
+        df_all = get_bets_df(tour=_tf)
         if df_all.empty:
             st.info("Nessuna bet registrata.")
         else:
@@ -672,11 +685,12 @@ with tab_perf:
                 lambda r: f"{_result_colors.get(r, '')} {r}")
             st.dataframe(
                 df_display[[
-                    "logged_at", "player1", "player2", "market",
+                    "logged_at", "tour", "player1", "player2", "market",
                     "selection", "odds", "model_prob", "edge",
                     "stake", "result", "profit"
                 ]].rename(columns={
                     "logged_at": "Data",
+                    "tour": "Circuito",
                     "player1": "Giocatore 1",
                     "player2": "Giocatore 2",
                     "market": "Mercato",
