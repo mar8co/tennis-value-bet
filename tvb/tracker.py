@@ -251,6 +251,16 @@ def _evaluate_bet(market: str, selection: str, winner: str) -> bool | None:
     return None
 
 
+def get_pending_bets(tour: str = "") -> pd.DataFrame:
+    """Pending bets ordered by Kelly descending — today's live proposals."""
+    init_tracker_db()
+    tc = "AND tour = :tour" if tour else ""
+    p = {"tour": tour} if tour else {}
+    return _read(
+        f"SELECT * FROM bets WHERE result = 'pending' {tc} "
+        f"ORDER BY kelly DESC", p)
+
+
 def get_bets_df(tour: str = "") -> pd.DataFrame:
     init_tracker_db()
     where = "WHERE tour = :tour" if tour else ""

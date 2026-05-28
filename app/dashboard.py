@@ -34,7 +34,8 @@ from tvb.ratings import find_player_id, matchup_probs, player_names
 from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
 from tvb.tracker import (accuracy_by_player, equity_curve, get_bets_df,
-                          log_bet, performance_stats, update_results)
+                          get_pending_bets, log_bet, performance_stats,
+                          update_results)
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -190,7 +191,10 @@ def _auto_log_all_matches() -> int:
         m = matches[mid]
         tour, surface, bo_match = match_context(m.sport_key)
         name0, name1 = m.player1, m.player2
-        p0, p1, _, _ = _resolve_live_params(tour, surface, name0, name1)
+        p0, p1, _, status = _resolve_live_params(tour, surface, name0, name1)
+        if not status.startswith("✓"):
+            scanned.add(mid)   # skip: no Sackmann data, fallback probs are unreliable
+            continue
         book = _simulate(float(p0), float(p1), bo_match, config.N_SIMS)
         mkts: dict = {"Match winner": {"selections": [
             {"label": name0, "odds": m.odds1,
@@ -609,6 +613,41 @@ with tab_perf:
                          horizontal=True, index=0,
                          help="Filtra tutte le statistiche per circuito")
     _tf = "" if _tour_sel == "Tutti" else _tour_sel.lower()
+
+    # ---- today's proposals ordered by Kelly
+    _pending = get_pending_bets(tour=_tf)
+    n_pending_display = len(_pending)
+    st.markdown(f"#### 📋 Proposte in attesa — {n_pending_display} giocate")
+    if _pending.empty:
+        st.info(
+            "Nessuna proposta in attesa. Le value bet vengono registrate "
+            "automaticamente al caricamento del palinsesto (solo per i "
+            "giocatori presenti nel database Sackmann).")
+    else:
+        _disp = _pending.copy()
+        _disp["Orario"] = _disp["commence_time"].apply(
+            lambda s: (_parse_dt(s) or "").astimezone(_LOCAL_TZ).strftime(
+                "%d/%m %H:%M") if _parse_dt(s) else s)
+        _disp["Match"] = _disp["player1"] + " vs " + _disp["player2"]
+        _disp["ATP/WTA"] = _disp["tour"].str.upper()
+        _disp["model_prob"] = (_disp["model_prob"] * 100).round(1)
+        _disp["edge"] = (_disp["edge"] * 100).round(1)
+        _disp["kelly"] = (_disp["kelly"] * 100).round(1)
+        st.dataframe(
+            _disp[["Orario", "Match", "ATP/WTA", "market", "selection",
+                   "odds", "model_prob", "edge", "kelly"]].rename(columns={
+                "market": "Mercato", "selection": "Selezione",
+                "odds": "Quota", "model_prob": "P(mod)%",
+                "edge": "Edge%", "kelly": "Kelly%"}),
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Kelly%": st.column_config.ProgressColumn(
+                    "Kelly%", min_value=0, max_value=15, format="%.1f%%"),
+                "Edge%": st.column_config.NumberColumn(format="+%.1f%%"),
+                "P(mod)%": st.column_config.NumberColumn(format="%.1f%%"),
+                "Quota": st.column_config.NumberColumn(format="%.2f"),
+            })
 
     stats = performance_stats(tour=_tf)
     n_resolved = stats["n_resolved"]
