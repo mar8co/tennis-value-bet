@@ -681,45 +681,58 @@ with tab_perf:
                 "Quota": st.column_config.NumberColumn(format="%.2f"),
             })
 
-    # ---- per-match manual resolution
+    # ---- bulk result entry
     _pending_matches = get_pending_matches(tour=_tf)
     if not _pending_matches.empty:
-        with st.expander("✏️ Inserisci risultato partita"):
+        with st.expander(
+                f"📝 Inserisci risultati in blocco  —  "
+                f"{len(_pending_matches)} partite in attesa", expanded=False):
             st.caption(
-                "Risolve in un colpo solo **tutte** le giocate di una partita "
-                "(Match winner + Total games se indichi i game totali). "
-                "Usa questa sezione quando l'aggiornamento automatico non trova i dati.")
-            _match_opts = {
-                f"{r.player1} vs {r.player2}  "
-                f"[{(_parse_dt(r.commence_time) or '').astimezone(_LOCAL_TZ).strftime('%d/%m %H:%M') if _parse_dt(r.commence_time) else r.commence_time}]"
-                f"  — {r.n_bets} bet": r.match_id
-                for r in _pending_matches.itertuples(index=False)
-            }
-            _msel = st.selectbox("Partita", list(_match_opts.keys()),
-                                 key="_manual_match_sel")
-            _mrow = _pending_matches.loc[
-                _pending_matches["match_id"] == _match_opts[_msel]].iloc[0]
-            _wcol, _gcol = st.columns([1, 1])
-            _winner_choice = _wcol.radio(
-                "Vincitore",
-                [_mrow["player1"], _mrow["player2"]],
-                key="_manual_winner")
-            _total_g = _gcol.number_input(
-                "Game totali (opzionale — per Total games)",
-                min_value=0, max_value=200, value=0, step=1,
-                help="Somma di tutti i game giocati nel match (es. 6-3 6-4 = 19). "
-                     "Lascia 0 se vuoi risolvere solo il Match winner.",
-                key="_manual_total_g")
-            if st.button("✅ Conferma e risolvi", key="_manual_match_btn",
-                         type="primary"):
-                _tg = int(_total_g) if _total_g > 0 else None
-                _n = resolve_match_manual(_match_opts[_msel], _winner_choice,
-                                          total_games=_tg)
-                if _n:
-                    st.success(f"Risolte **{_n} giocate** per questo match.")
+                "Imposta il **Vincitore** per le partite finite, "
+                "inserisci i **Game totali** se vuoi risolvere anche le bet Total games "
+                "(es. 6-3 6-4 = 19), poi clicca *Salva*. "
+                "Lascia '⏳' per le partite non ancora finite.")
+            _winners_bulk: dict = {}
+            _games_bulk: dict = {}
+            with st.form("_bulk_results_form"):
+                _hc = st.columns([3, 1, 2, 1])
+                _hc[0].markdown("**Partita**")
+                _hc[1].markdown("**Ora**")
+                _hc[2].markdown("**Vincitore**")
+                _hc[3].markdown("**Game**")
+                for _bi, _br in enumerate(
+                        _pending_matches.itertuples(index=False)):
+                    _rc = st.columns([3, 1, 2, 1])
+                    _dt = _parse_dt(_br.commence_time)
+                    _rc[0].markdown(
+                        f"**{_br.player1}** vs {_br.player2}  \n"
+                        f"<small style='opacity:.6'>{_br.n_bets} bet · "
+                        f"{_br.tour.upper()}</small>",
+                        unsafe_allow_html=True)
+                    _rc[1].caption(
+                        _dt.astimezone(_LOCAL_TZ).strftime("%d/%m %H:%M")
+                        if _dt else "—")
+                    _winners_bulk[_br.match_id] = _rc[2].selectbox(
+                        "W", ["⏳", _br.player1, _br.player2],
+                        key=f"_bw_{_bi}", label_visibility="collapsed")
+                    _games_bulk[_br.match_id] = _rc[3].number_input(
+                        "G", 0, 200, 0, step=1,
+                        key=f"_bg_{_bi}", label_visibility="collapsed")
+                _bulk_ok = st.form_submit_button(
+                    "✅ Salva risultati selezionati",
+                    type="primary", use_container_width=True)
+            if _bulk_ok:
+                _tot_r = 0
+                for _mid, _w in _winners_bulk.items():
+                    if _w == "⏳":
+                        continue
+                    _tg = int(_games_bulk[_mid]) if _games_bulk.get(_mid, 0) > 0 else None
+                    _tot_r += resolve_match_manual(_mid, _w, total_games=_tg)
+                if _tot_r:
+                    st.success(f"✅ {_tot_r} giocate aggiornate.")
                     st.rerun()
                 else:
-                    st.warning("Nessuna giocata aggiornata — verifica i dati.")
+                    st.warning("Nessun vincitore selezionato.")
 
     stats = performance_stats(tour=_tf)
     n_resolved = stats["n_resolved"]
@@ -828,30 +841,28 @@ with tab_perf:
                         "Profitto netto (€)", format="€ %.2f"),
                 })
 
-    # ---- scores API debug
+    # ---- scores API debug (button-gated — never auto-fires)
     st.divider()
-    with st.expander("🔍 Debug: stato aggiornamento automatico risultati"):
+    with st.expander("🔍 Debug scores API"):
         st.caption(
-            "Mostra cosa restituisce The Odds API Scores per le bet in attesa. "
-            "Se 'completati = 0' il problema è la copertura API, usa il modulo "
-            "manuale qui sopra.")
+            "Controlla cosa restituisce The Odds API Scores. "
+            "Ogni click consuma crediti API — usalo solo per diagnosticare.")
         if _key:
-            with st.spinner("Interrogo scores API..."):
-                _dbg = scores_debug(_key)
-            if not _dbg:
-                st.info("Nessuna bet pending con sport_key valido.")
-            for _d in _dbg:
-                _ok = _d["matched_pending"] > 0
-                (_st_fn := st.success if _ok else st.warning)(
-                    f"**`{_d['sport_key']}`** — "
-                    f"{_d['total_events']} eventi recuperati · "
-                    f"{_d['completed']} completati · "
-                    f"**{_d['matched_pending']} corrispondono alle bet nel DB**")
-                for _s in _d["sample_completed"]:
-                    st.markdown(
-                        f"- `{_s['p1']}` vs `{_s['p2']}` · "
-                        f"`{_s['ct']}` · scores={_s['scores']} · "
-                        f"winner=`{_s['winner']}`")
+            if st.button("Controlla scores API", key="_dbg_scores_btn"):
+                with st.spinner("Interrogo scores API..."):
+                    _dbg = scores_debug(_key)
+                if not _dbg:
+                    st.info("Nessuna bet pending con sport_key valido.")
+                for _d in _dbg:
+                    _fn = st.success if _d["matched_pending"] > 0 else st.warning
+                    _fn(f"**`{_d['sport_key']}`** — "
+                        f"{_d['total_events']} eventi · "
+                        f"{_d['completed']} completati · "
+                        f"**{_d['matched_pending']} match con bet nel DB**")
+                    for _s in _d["sample_completed"]:
+                        st.markdown(
+                            f"- `{_s['p1']}` vs `{_s['p2']}` · "
+                            f"scores={_s['scores']} · winner=`{_s['winner']}`")
         else:
             st.warning("Chiave API non configurata.")
 
