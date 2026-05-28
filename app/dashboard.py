@@ -9,6 +9,7 @@ gate active behind `APP_PASSWORD`.
 """
 import os
 import sys
+import time
 import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,20 +33,16 @@ from tvb.pipeline import evaluate_match, rank_value_bets
 from tvb.ratings import find_player_id, matchup_probs, player_names
 from tvb.serve_return import player_serve_return
 from tvb.simulator import monte_carlo
+from tvb.tracker import (accuracy_by_player, equity_curve, get_bets_df,
+                          log_bet, performance_stats, update_results)
 
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
 
-# ----------------------------------------------------- font + size override
 st.markdown(
     """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
-    /* Just bump the base size — the font itself is applied by Streamlit's
-       theme (font = "Plus Jakarta Sans" in .streamlit/config.toml). Don't
-       touch font-family on generic elements: Streamlit's Material Symbols
-       icons live in <span> elements and any broad span-level override
-       hijacks their icon font and renders ligature names as text. */
     html { font-size: 17px; }
     code, pre { font-family: ui-monospace, 'JetBrains Mono', monospace; }
     </style>
@@ -89,7 +86,6 @@ def load_serve_return(tour: str, surface: str):
 
 @st.cache_data(show_spinner="Simulazione in corso...")
 def _simulate(p0: float, p1: float, best_of: int, n_sims: int):
-    """Cached Monte Carlo — same (p0, p1, best_of, n_sims) returns same result."""
     return monte_carlo(p0, p1, best_of=best_of, n_sims=n_sims)
 
 
@@ -132,7 +128,6 @@ def _parse_dt(s: str):
 
 
 def _match_label(m) -> str:
-    """Dropdown label: 'P1 vs P2 - HH:MM 🏁' for upcoming, '... - LIVE 🟥' for in-play."""
     dt = _parse_dt(m.commence_time)
     if dt is None:
         return f"{m.player1} vs {m.player2} - — ⏳"
@@ -143,8 +138,6 @@ def _match_label(m) -> str:
 
 
 def _live_score_url(name0: str, name1: str) -> str:
-    """Google search URL for 'P1 vs P2' — first results usually include
-    live-score sites (SofaScore, Flashscore, ATP/WTA)."""
     q = urllib.parse.quote_plus(f"{name0} vs {name1} live score")
     return f"https://www.google.com/search?q={q}"
 
@@ -187,16 +180,12 @@ def _fetch_matches():
         return
     try:
         found = fetch_tennis_odds(key)
-        # Stable IDs as dict keys (don't change when the time becomes LIVE);
-        # display labels are computed by format_func on every render.
         new_matches = {
             f"{m.player1}|{m.player2}|{m.commence_time}": m for m in found}
         prev_sel = st.session_state.get("live_sel")
         st.session_state["live_matches"] = new_matches
         st.session_state.pop("_fetch_error", None)
         if found:
-            # Keep the user's current match if it still exists; fall back to
-            # the first match only when the previous one is gone.
             if prev_sel not in new_matches:
                 st.session_state["live_sel"] = next(iter(new_matches))
             _apply_live_odds()
@@ -222,7 +211,6 @@ elif "live_matches" not in st.session_state:
 st.title("🎾 Tennis Value Bet")
 st.caption("Analisi value-bet sui match di oggi · modello di simulazione "
            "punto-su-punto vs quote bookmaker · progetto personale.")
-
 
 # ------------------------------------------------------------------ sidebar
 with st.sidebar:
@@ -263,229 +251,378 @@ with st.sidebar:
             st.rerun()
 
 
-# ------------------------------------------------------------ match picker
-hl, hr = st.columns([5, 1])
-hl.subheader("📅 Partite di oggi")
-if hr.button("🔄 Aggiorna", use_container_width=True):
-    with st.spinner("Aggiorno le quote..."):
-        _fetch_matches()
-    # No explicit st.rerun(): the rest of the script renders below this
-    # button and reads the freshly updated session_state on the same run.
-
-if st.session_state.get("_fetch_error"):
-    st.error(st.session_state["_fetch_error"])
-
-live = st.session_state.get("live_matches") or {}
-if not live:
-    st.info("Nessun match disponibile al momento. Apri le **Impostazioni** "
-            "(barra a sinistra) per controllare la chiave API, oppure premi "
-            "**Aggiorna** più tardi.")
-    st.stop()
-
-st.selectbox("Match", options=list(live.keys()), key="live_sel",
-             format_func=lambda k: _match_label(live[k]),
-             on_change=_apply_live_odds, label_visibility="collapsed")
-
-m = live[st.session_state["live_sel"]]
-tour, surface, bo_match = match_context(m.sport_key)
-name0, name1 = m.player1, m.player2
-p0, p1, elo_xcheck, status = _resolve_live_params(tour, surface, name0, name1)
-
-# ----------------------------------------------- match card
-with st.container(border=True):
-    head, info = st.columns([3, 2])
-    with head:
-        st.markdown(f"### {name0}  vs  {name1}")
-        dt_match = _parse_dt(m.commence_time)
-        if dt_match is not None and dt_match <= datetime.now(timezone.utc):
-            when_html = ("<span style='color:#8A3E1A;font-weight:700'>"
-                         "🟥 LIVE</span>")
-        elif dt_match is not None:
-            when_html = (f"🏁 {dt_match.astimezone(_LOCAL_TZ).strftime('%H:%M')}")
-        else:
-            when_html = "—"
-        st.markdown(
-            f"<div style='opacity:.7; font-size:.95em'>{tour.upper()} · "
-            f"{surface} · best-of-{bo_match} · {when_html}</div>",
-            unsafe_allow_html=True)
-    with info:
-        (st.caption if status.startswith("✓") else st.warning)(status)
-        a, b = st.columns(2)
-        a.metric(f"{name0[:14]} — p", f"{p0 * 100:.1f}%")
-        b.metric(f"{name1[:14]} — p", f"{p1 * 100:.1f}%")
-
-# Live score link — opens a Google search for "P1 vs P2" in a new tab
-_score_url = _live_score_url(name0, name1)
-st.markdown(
-    f'<a href="{_score_url}" target="_blank" rel="noopener" '
-    f'style="color:#c1440e; font-weight:600; text-decoration:none; '
-    f'font-size:.95em">Vedi punteggio live ↗</a>',
-    unsafe_allow_html=True)
+# ------------------------------------------------------------------ tabs
+tab_analysis, tab_perf = st.tabs(["🎾 Analisi match", "📊 Performance tracker"])
 
 
-if tour == "wta" and recalibrate:
-    st.warning(
-        "**WTA match**: le correzioni di ricalibrazione sono state "
-        "validate su dati ATP. Su WTA sono un'approssimazione — "
-        "considera di disattivarle (Impostazioni → Ricalibrazione validata).")
+# ================================================================ TAB ANALISI
+with tab_analysis:
 
-# ------------------------------------------------------------ quote section
-st.subheader("Quote bookmaker")
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.markdown("**Match winner**")
-    st.number_input(name0, 1.01, 50.0, key="mw0")
-    st.number_input(name1, 1.01, 50.0, key="mw1")
-with c2:
-    st.markdown("**Total games**")
-    line_tg = st.number_input("Linea", 10.0, 40.0, step=0.5, key="ltg")
-    st.number_input("Over", 1.01, 50.0, key="ov")
-    st.number_input("Under", 1.01, 50.0, key="un")
-with c3:
-    st.markdown("**Handicap games**")
-    line_h = st.number_input(f"Linea {name0}", -12.0, 12.0, step=0.5,
-                             key="lh")
-    st.number_input(f"{name0} ({line_h:+})", 1.01, 50.0, key="h0")
-    st.number_input(f"{name1} ({-line_h:+})", 1.01, 50.0, key="h1")
+    # -------------------------------------------------------- match picker
+    hl, hr = st.columns([5, 1])
+    hl.subheader("📅 Partite di oggi")
+    if hr.button("🔄 Aggiorna", use_container_width=True):
+        with st.spinner("Aggiorno le quote..."):
+            _fetch_matches()
 
-with st.expander("Mercati a inserimento manuale (non disponibili via API)"):
-    st.caption(
-        "The Odds API non fornisce quote per **vincente 1° set** e "
-        "**tie-break** sul tennis. Questi due mercati restano a inserimento "
-        "manuale e i valori non cambiano automaticamente al cambio del match.")
-    cm1, cm2 = st.columns(2)
-    with cm1:
-        st.markdown("**Vincente 1° set**")
-        st.number_input(name0, 1.01, 50.0, key="s10")
-        st.number_input(name1, 1.01, 50.0, key="s11")
-    with cm2:
-        st.markdown("**Tie-break**")
-        st.number_input("Sì", 1.01, 50.0, key="tby")
-        st.number_input("No", 1.01, 50.0, key="tbn")
+    if st.session_state.get("_fetch_error"):
+        st.error(st.session_state["_fetch_error"])
 
+    live = st.session_state.get("live_matches") or {}
+    if not live:
+        st.info("Nessun match disponibile al momento. Apri le **Impostazioni** "
+                "(barra a sinistra) per controllare la chiave API, oppure premi "
+                "**Aggiorna** più tardi.")
+    else:
+        st.selectbox("Match", options=list(live.keys()), key="live_sel",
+                     format_func=lambda k: _match_label(live[k]),
+                     on_change=_apply_live_odds, label_visibility="collapsed")
 
-# ------------------------------------------- auto-analyze (no button)
-temp = config.SR_TEMPERATURE if recalibrate else 1.0
-tg_delta = config.SR_TOTAL_SHIFT if recalibrate else 0.0
-hcap_temp = config.SR_HANDICAP_TEMPERATURE if recalibrate else 1.0
-tb_a, tb_b = config.SR_TIEBREAK_LOGISTIC if recalibrate else (1.0, 0.0)
+        m = live[st.session_state["live_sel"]]
+        tour, surface, bo_match = match_context(m.sport_key)
+        name0, name1 = m.player1, m.player2
+        p0, p1, elo_xcheck, status = _resolve_live_params(
+            tour, surface, name0, name1)
 
-book = _simulate(float(p0), float(p1), int(best_of), int(n_sims))
-
-s = st.session_state
-markets = {
-    "Match winner": {"selections": [
-        {"label": name0, "odds": s["mw0"],
-         "model": lambda b: float(apply_temperature(
-             b.p_match_winner(0), temp))},
-        {"label": name1, "odds": s["mw1"],
-         "model": lambda b: float(apply_temperature(
-             b.p_match_winner(1), temp))},
-    ]},
-    "Total games": {"selections": [
-        {"label": f"Over {line_tg}", "odds": s["ov"],
-         "model": lambda b: b.p_total_over(line_tg + tg_delta)},
-        {"label": f"Under {line_tg}", "odds": s["un"],
-         "model": lambda b: 1.0 - b.p_total_over(line_tg + tg_delta)},
-    ]},
-    "Handicap games": {"selections": [
-        {"label": f"{name0} {line_h:+}", "odds": s["h0"],
-         "model": lambda b: float(apply_temperature(
-             b.p_handicap(0, line_h), hcap_temp))},
-        {"label": f"{name1} {-line_h:+}", "odds": s["h1"],
-         "model": lambda b: float(apply_temperature(
-             b.p_handicap(1, -line_h), hcap_temp))},
-    ]},
-    "Vincente 1° set": {"selections": [
-        {"label": name0, "odds": s["s10"],
-         "model": lambda b: b.p_set1_winner(0)},
-        {"label": name1, "odds": s["s11"],
-         "model": lambda b: b.p_set1_winner(1)},
-    ]},
-    "Tie-break": {"selections": [
-        {"label": "Sì", "odds": s["tby"],
-         "model": lambda b: float(apply_logistic(
-             b.p_tiebreak_yes(), tb_a, tb_b))},
-        {"label": "No", "odds": s["tbn"],
-         "model": lambda b: 1.0 - float(apply_logistic(
-             b.p_tiebreak_yes(), tb_a, tb_b))},
-    ]},
-}
-
-match_name = f"{name0} vs {name1}"
-bets = evaluate_match(match_name, book, markets)
-ranked = rank_value_bets(bets, min_edge=min_edge, min_prob=min_prob)
-
-
-# --------------------------------------------------------------- top picks
-st.subheader(f"💎 Migliori value bet — {len(ranked)} sopra soglia")
-if not ranked:
-    st.info("Nessuna value bet sopra la soglia di edge impostata "
-            "(prova ad abbassarla in Impostazioni).")
-else:
-    st.caption("Ordinate per Kelly (combina edge e probabilità di vittoria) "
-               "— in alto le giocate più fattibili. Le prime 3 in evidenza, "
-               "le altre sotto.")
-    BADGES = {
-        "alta":  ("🟢", "ALTA",  "#5A8C50"),
-        "media": ("🔵", "MEDIA", "#2563eb"),
-        "bassa": ("⚪", "BASSA", "#6b7280"),
-    }
-    top_n = min(3, len(ranked))
-    for i, vb in enumerate(ranked[:top_n], 1):
+        # ----------------------------------------------- match card
         with st.container(border=True):
-            head, ee, ev, cf = st.columns([4, 1, 1, 1])
-            head.markdown(
-                f"#### #{i} · {vb.market} — {vb.selection}  @{vb.odds:.2f}"
-                f"  \nModello **{vb.model_prob * 100:.1f}%**  ·  "
-                f"mercato {vb.market_prob * 100:.1f}%")
-            ee.metric("Edge", f"{vb.edge * 100:+.1f}%")
-            ev.metric("EV", f"{vb.ev * 100:+.1f}%")
-            emoji, lbl, color = BADGES.get(vb.confidence,
-                                           ("⚪", "—", "#6b7280"))
-            cf.markdown(
-                f"<div style='font-size:1.8em; text-align:center; "
-                f"line-height:1'>{emoji}</div>"
-                f"<div style='color:{color}; font-weight:700; "
-                f"text-align:center; margin-top:.2em'>{lbl}</div>"
-                f"<div style='font-size:.85em; text-align:center; "
-                f"opacity:.8; margin-top:.3em'>Kelly "
-                f"{vb.kelly * 100:.1f}%</div>",
-                unsafe_allow_html=True)
+            head, info = st.columns([3, 2])
+            with head:
+                st.markdown(f"### {name0}  vs  {name1}")
+                dt_match = _parse_dt(m.commence_time)
+                if dt_match is not None and dt_match <= datetime.now(timezone.utc):
+                    when_html = ("<span style='color:#8A3E1A;font-weight:700'>"
+                                 "🟥 LIVE</span>")
+                elif dt_match is not None:
+                    when_html = (
+                        f"🏁 {dt_match.astimezone(_LOCAL_TZ).strftime('%H:%M')}")
+                else:
+                    when_html = "—"
+                st.markdown(
+                    f"<div style='opacity:.7; font-size:.95em'>{tour.upper()} · "
+                    f"{surface} · best-of-{bo_match} · {when_html}</div>",
+                    unsafe_allow_html=True)
+            with info:
+                (st.caption if status.startswith("✓") else st.warning)(status)
+                a, b = st.columns(2)
+                a.metric(f"{name0[:14]} — p", f"{p0 * 100:.1f}%")
+                b.metric(f"{name1[:14]} — p", f"{p1 * 100:.1f}%")
 
-    if len(ranked) > top_n:
-        st.markdown("**Altre value bet**")
-        for i, vb in enumerate(ranked[top_n:], top_n + 1):
-            em = BADGES.get(vb.confidence, ("⚪",))[0]
-            st.markdown(
-                f"{em} **{i}. {vb.market} — {vb.selection}**  "
-                f"@{vb.odds:.2f}  ·  EV {vb.ev * 100:+.1f}%  ·  "
-                f"edge {vb.edge * 100:+.1f}%  ·  Kelly "
-                f"{vb.kelly * 100:.1f}%")
+        _score_url = _live_score_url(name0, name1)
+        st.markdown(
+            f'<a href="{_score_url}" target="_blank" rel="noopener" '
+            f'style="color:#c1440e; font-weight:600; text-decoration:none; '
+            f'font-size:.95em">Vedi punteggio live ↗</a>',
+            unsafe_allow_html=True)
+
+        if tour == "wta" and recalibrate:
+            st.warning(
+                "**WTA match**: le correzioni di ricalibrazione sono state "
+                "validate su dati ATP. Su WTA sono un'approssimazione — "
+                "considera di disattivarle (Impostazioni → Ricalibrazione "
+                "validata).")
+
+        # -------------------------------------------------------- quote section
+        st.subheader("Quote bookmaker")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("**Match winner**")
+            st.number_input(name0, 1.01, 50.0, key="mw0")
+            st.number_input(name1, 1.01, 50.0, key="mw1")
+        with c2:
+            st.markdown("**Total games**")
+            line_tg = st.number_input("Linea", 10.0, 40.0, step=0.5, key="ltg")
+            st.number_input("Over", 1.01, 50.0, key="ov")
+            st.number_input("Under", 1.01, 50.0, key="un")
+        with c3:
+            st.markdown("**Handicap games**")
+            line_h = st.number_input(f"Linea {name0}", -12.0, 12.0, step=0.5,
+                                     key="lh")
+            st.number_input(f"{name0} ({line_h:+})", 1.01, 50.0, key="h0")
+            st.number_input(f"{name1} ({-line_h:+})", 1.01, 50.0, key="h1")
+
+        with st.expander(
+                "Mercati a inserimento manuale (non disponibili via API)"):
+            st.caption(
+                "The Odds API non fornisce quote per **vincente 1° set** e "
+                "**tie-break** sul tennis. Questi due mercati restano a "
+                "inserimento manuale e i valori non cambiano automaticamente "
+                "al cambio del match.")
+            cm1, cm2 = st.columns(2)
+            with cm1:
+                st.markdown("**Vincente 1° set**")
+                st.number_input(name0, 1.01, 50.0, key="s10")
+                st.number_input(name1, 1.01, 50.0, key="s11")
+            with cm2:
+                st.markdown("**Tie-break**")
+                st.number_input("Sì", 1.01, 50.0, key="tby")
+                st.number_input("No", 1.01, 50.0, key="tbn")
+
+        # ------------------------------------------- auto-analyze
+        temp = config.SR_TEMPERATURE if recalibrate else 1.0
+        tg_delta = config.SR_TOTAL_SHIFT if recalibrate else 0.0
+        hcap_temp = config.SR_HANDICAP_TEMPERATURE if recalibrate else 1.0
+        tb_a, tb_b = config.SR_TIEBREAK_LOGISTIC if recalibrate else (1.0, 0.0)
+
+        book = _simulate(float(p0), float(p1), int(best_of), int(n_sims))
+
+        s = st.session_state
+        markets = {
+            "Match winner": {"selections": [
+                {"label": name0, "odds": s["mw0"],
+                 "model": lambda b: float(apply_temperature(
+                     b.p_match_winner(0), temp))},
+                {"label": name1, "odds": s["mw1"],
+                 "model": lambda b: float(apply_temperature(
+                     b.p_match_winner(1), temp))},
+            ]},
+            "Total games": {"selections": [
+                {"label": f"Over {line_tg}", "odds": s["ov"],
+                 "model": lambda b: b.p_total_over(line_tg + tg_delta)},
+                {"label": f"Under {line_tg}", "odds": s["un"],
+                 "model": lambda b: 1.0 - b.p_total_over(line_tg + tg_delta)},
+            ]},
+            "Handicap games": {"selections": [
+                {"label": f"{name0} {line_h:+}", "odds": s["h0"],
+                 "model": lambda b: float(apply_temperature(
+                     b.p_handicap(0, line_h), hcap_temp))},
+                {"label": f"{name1} {-line_h:+}", "odds": s["h1"],
+                 "model": lambda b: float(apply_temperature(
+                     b.p_handicap(1, -line_h), hcap_temp))},
+            ]},
+            "Vincente 1° set": {"selections": [
+                {"label": name0, "odds": s["s10"],
+                 "model": lambda b: b.p_set1_winner(0)},
+                {"label": name1, "odds": s["s11"],
+                 "model": lambda b: b.p_set1_winner(1)},
+            ]},
+            "Tie-break": {"selections": [
+                {"label": "Sì", "odds": s["tby"],
+                 "model": lambda b: float(apply_logistic(
+                     b.p_tiebreak_yes(), tb_a, tb_b))},
+                {"label": "No", "odds": s["tbn"],
+                 "model": lambda b: 1.0 - float(apply_logistic(
+                     b.p_tiebreak_yes(), tb_a, tb_b))},
+            ]},
+        }
+
+        match_name = f"{name0} vs {name1}"
+        bets = evaluate_match(match_name, book, markets)
+        ranked = rank_value_bets(bets, min_edge=min_edge, min_prob=min_prob)
+
+        # ----------------------- auto-log value bets to tracker
+        for vb in ranked:
+            log_bet(
+                player1=name0, player2=name1,
+                commence_time=m.commence_time,
+                sport_key=m.sport_key,
+                market=vb.market, selection=vb.selection,
+                odds=vb.odds, model_prob=vb.model_prob,
+                edge=vb.edge, ev=vb.ev, kelly=vb.kelly,
+                stake=10.0)
+
+        # --------------------------------------------------------------- top picks
+        st.subheader(f"💎 Migliori value bet — {len(ranked)} sopra soglia")
+        if not ranked:
+            st.info("Nessuna value bet sopra la soglia di edge impostata "
+                    "(prova ad abbassarla in Impostazioni).")
+        else:
+            st.caption("Ordinate per Kelly (combina edge e probabilità di vittoria) "
+                       "— in alto le giocate più fattibili. Le prime 3 in evidenza, "
+                       "le altre sotto.")
+            BADGES = {
+                "alta":  ("🟢", "ALTA",  "#5A8C50"),
+                "media": ("🔵", "MEDIA", "#2563eb"),
+                "bassa": ("⚪", "BASSA", "#6b7280"),
+            }
+            top_n = min(3, len(ranked))
+            for i, vb in enumerate(ranked[:top_n], 1):
+                with st.container(border=True):
+                    head, ee, ev, cf = st.columns([4, 1, 1, 1])
+                    head.markdown(
+                        f"#### #{i} · {vb.market} — {vb.selection}  "
+                        f"@{vb.odds:.2f}"
+                        f"  \nModello **{vb.model_prob * 100:.1f}%**  ·  "
+                        f"mercato {vb.market_prob * 100:.1f}%")
+                    ee.metric("Edge", f"{vb.edge * 100:+.1f}%")
+                    ev.metric("EV", f"{vb.ev * 100:+.1f}%")
+                    emoji, lbl, color = BADGES.get(vb.confidence,
+                                                   ("⚪", "—", "#6b7280"))
+                    cf.markdown(
+                        f"<div style='font-size:1.8em; text-align:center; "
+                        f"line-height:1'>{emoji}</div>"
+                        f"<div style='color:{color}; font-weight:700; "
+                        f"text-align:center; margin-top:.2em'>{lbl}</div>"
+                        f"<div style='font-size:.85em; text-align:center; "
+                        f"opacity:.8; margin-top:.3em'>Kelly "
+                        f"{vb.kelly * 100:.1f}%</div>",
+                        unsafe_allow_html=True)
+
+            if len(ranked) > top_n:
+                st.markdown("**Altre value bet**")
+                for i, vb in enumerate(ranked[top_n:], top_n + 1):
+                    em = BADGES.get(vb.confidence, ("⚪",))[0]
+                    st.markdown(
+                        f"{em} **{i}. {vb.market} — {vb.selection}**  "
+                        f"@{vb.odds:.2f}  ·  EV {vb.ev * 100:+.1f}%  ·  "
+                        f"edge {vb.edge * 100:+.1f}%  ·  Kelly "
+                        f"{vb.kelly * 100:.1f}%")
+
+        # --------------------------------------------- diagnostics + full table
+        with st.expander("Diagnostica modello"):
+            p_mw0_raw = book.p_match_winner(0)
+            p_mw0 = float(apply_temperature(p_mw0_raw, temp))
+            games_raw = book.total_games.mean()
+            p_tb_raw = book.p_tiebreak_yes()
+            p_tb = float(apply_logistic(p_tb_raw, tb_a, tb_b))
+            n_cols = 4 if elo_xcheck is not None else 3
+            cols = st.columns(n_cols)
+            cols[0].metric(f"Vittoria {name0[:14]} (modello)",
+                           f"{p_mw0 * 100:.1f}%",
+                           help=f"Grezza: {p_mw0_raw * 100:.1f}%")
+            cols[1].metric("Media game totali",
+                           f"{games_raw - tg_delta:.1f}",
+                           help=f"Grezza: {games_raw:.1f}")
+            cols[2].metric("Tie-break (almeno 1)",
+                           f"{p_tb * 100:.1f}%",
+                           help=f"Grezza: {p_tb_raw * 100:.1f}%")
+            if elo_xcheck is not None:
+                cols[3].metric(f"Vittoria {name0[:14]} (Elo)",
+                               f"{elo_xcheck * 100:.1f}%",
+                               help="Controprova indipendente dal modello a punti.")
+
+        with st.expander("Tutti i mercati analizzati"):
+            st.dataframe([vars(b) for b in bets], width="stretch")
 
 
-# --------------------------------------------- diagnostics + full table
-with st.expander("Diagnostica modello"):
-    p_mw0_raw = book.p_match_winner(0)
-    p_mw0 = float(apply_temperature(p_mw0_raw, temp))
-    games_raw = book.total_games.mean()
-    p_tb_raw = book.p_tiebreak_yes()
-    p_tb = float(apply_logistic(p_tb_raw, tb_a, tb_b))
-    n_cols = 4 if elo_xcheck is not None else 3
-    cols = st.columns(n_cols)
-    cols[0].metric(f"Vittoria {name0[:14]} (modello)",
-                   f"{p_mw0 * 100:.1f}%",
-                   help=f"Grezza: {p_mw0_raw * 100:.1f}%")
-    cols[1].metric("Media game totali",
-                   f"{games_raw - tg_delta:.1f}",
-                   help=f"Grezza: {games_raw:.1f}")
-    cols[2].metric("Tie-break (almeno 1)",
-                   f"{p_tb * 100:.1f}%",
-                   help=f"Grezza: {p_tb_raw * 100:.1f}%")
-    if elo_xcheck is not None:
-        cols[3].metric(f"Vittoria {name0[:14]} (Elo)",
-                       f"{elo_xcheck * 100:.1f}%",
-                       help="Controprova indipendente dal modello a punti.")
+# ============================================================ TAB PERFORMANCE
+with tab_perf:
+    st.subheader("📊 Performance tracker")
+    st.caption(
+        "Ogni value bet proposta viene registrata automaticamente con stake "
+        "simulato di **€10**. I risultati vengono aggiornati tramite "
+        "The Odds API Scores (solo mercato Match winner; gli altri mercati "
+        "vengono risolti quando i dati Tennis-Data.co.uk sono disponibili).")
 
-with st.expander("Tutti i mercati analizzati"):
-    st.dataframe([vars(b) for b in bets], width="stretch")
+    # ---- auto-check results every 5 minutes
+    _now = time.time()
+    _last_check = st.session_state.get("_last_results_check", 0)
+    _key = _api_key()
+    if _key and (_now - _last_check) > 300:
+        _resolved = update_results(_key)
+        st.session_state["_last_results_check"] = _now
+        if _resolved:
+            st.toast(f"✅ {_resolved} risultat{'o' if _resolved == 1 else 'i'} "
+                     f"aggiornati automaticamente.")
+
+    # ---- manual refresh button
+    col_btn, col_ts = st.columns([2, 5])
+    if col_btn.button("🔄 Aggiorna risultati ora"):
+        if _key:
+            with st.spinner("Verifico risultati..."):
+                _n = update_results(_key)
+            st.session_state["_last_results_check"] = time.time()
+            st.success(f"Risolti {_n} nuovi risultati." if _n
+                       else "Nessun nuovo risultato disponibile.")
+            st.rerun()
+        else:
+            st.warning("Configura prima la chiave API (Impostazioni).")
+    if _last_check:
+        col_ts.caption(
+            f"Ultimo aggiornamento: "
+            f"{datetime.fromtimestamp(_last_check, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
+
+    stats = performance_stats()
+    n_resolved = stats["n_resolved"]
+
+    # ---- summary metrics
+    st.divider()
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Bet proposte", n_resolved + stats["n_pending"],
+              help="Risolte + in attesa di risultato")
+    m2.metric("Risolte", n_resolved)
+    m3.metric("% Vittorie",
+              f"{stats['win_rate'] * 100:.1f}%" if n_resolved else "—",
+              help=f"{stats['n_won']} vinte · {stats['n_lost']} perse")
+    profit = stats["total_profit"]
+    m4.metric("Profitto netto",
+              f"€ {profit:+.2f}" if n_resolved else "—",
+              delta=f"{stats['roi'] * 100:+.1f}% ROI" if n_resolved else None,
+              delta_color="normal")
+    m5.metric("Stake totale",
+              f"€ {stats['total_staked']:.0f}" if n_resolved else "—")
+
+    if n_resolved == 0:
+        st.info("Nessuna bet ancora risolta. Le proposte vengono registrate "
+                "automaticamente ogni volta che l'algoritmo genera value bet "
+                "nella tab **Analisi match**.")
+    else:
+        # ---- equity curve
+        st.divider()
+        st.markdown("#### Curva di equity (€ cumulati)")
+        eq = equity_curve()
+        if not eq.empty:
+            st.line_chart(eq.set_index("Data")["Profitto cumulato (€)"],
+                          use_container_width=True)
+
+        # ---- win/loss donut via progress bars
+        st.divider()
+        st.markdown("#### Vittorie vs Sconfitte")
+        wr = stats["win_rate"]
+        col_w, col_l = st.columns(2)
+        col_w.metric("Vinte", stats["n_won"])
+        col_w.progress(wr, text=f"{wr * 100:.1f}%")
+        col_l.metric("Perse", stats["n_lost"])
+        col_l.progress(1.0 - wr, text=f"{(1 - wr) * 100:.1f}%")
+
+        # ---- accuracy by player
+        st.divider()
+        st.markdown("#### Accuratezza per giocatore / esito")
+        by_player = accuracy_by_player()
+        if not by_player.empty:
+            st.dataframe(
+                by_player,
+                use_container_width=True,
+                column_config={
+                    "% Accuratezza": st.column_config.ProgressColumn(
+                        "% Accuratezza", min_value=0, max_value=100,
+                        format="%.1f%%"),
+                    "Profitto netto (€)": st.column_config.NumberColumn(
+                        "Profitto netto (€)", format="€ %.2f"),
+                })
+
+    # ---- full history
+    st.divider()
+    with st.expander("Storico completo delle bet"):
+        df_all = get_bets_df()
+        if df_all.empty:
+            st.info("Nessuna bet registrata.")
+        else:
+            _result_colors = {"won": "🟢", "lost": "🔴", "pending": "🟡"}
+            df_display = df_all.copy()
+            df_display["result"] = df_display["result"].map(
+                lambda r: f"{_result_colors.get(r, '')} {r}")
+            st.dataframe(
+                df_display[[
+                    "logged_at", "player1", "player2", "market",
+                    "selection", "odds", "model_prob", "edge",
+                    "stake", "result", "profit"
+                ]].rename(columns={
+                    "logged_at": "Data",
+                    "player1": "Giocatore 1",
+                    "player2": "Giocatore 2",
+                    "market": "Mercato",
+                    "selection": "Selezione",
+                    "odds": "Quota",
+                    "model_prob": "P(modello)",
+                    "edge": "Edge",
+                    "stake": "Stake (€)",
+                    "result": "Risultato",
+                    "profit": "P&L (€)",
+                }),
+                use_container_width=True,
+                column_config={
+                    "Edge": st.column_config.NumberColumn(format="%.1f%%"),
+                    "P(modello)": st.column_config.NumberColumn(format="%.1%"),
+                    "P&L (€)": st.column_config.NumberColumn(format="€ %.2f"),
+                })
