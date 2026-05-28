@@ -170,6 +170,67 @@ def _apply_live_odds():
         st.session_state["h1"] = c(m.hcap_odds2)
 
 
+def _auto_log_all_matches() -> int:
+    """Scan every live match and log positive-EV bets to the tracker.
+
+    Uses calibrated thresholds (config.MIN_EDGE) without a min_prob filter
+    so Over/Under and Handicap bets are captured for accuracy tracking.
+    Each match is processed once per session; INSERT OR IGNORE in log_bet
+    handles deduplication across sessions.
+    """
+    matches = st.session_state.get("live_matches") or {}
+    if not matches:
+        return 0
+    scanned = st.session_state.setdefault("_scanned_match_ids", set())
+    new_ids = set(matches.keys()) - scanned
+    if not new_ids:
+        return 0
+    total = 0
+    for mid in new_ids:
+        m = matches[mid]
+        tour, surface, bo_match = match_context(m.sport_key)
+        name0, name1 = m.player1, m.player2
+        p0, p1, _, _ = _resolve_live_params(tour, surface, name0, name1)
+        book = _simulate(float(p0), float(p1), bo_match, config.N_SIMS)
+        mkts: dict = {"Match winner": {"selections": [
+            {"label": name0, "odds": m.odds1,
+             "model": lambda b: float(apply_temperature(
+                 b.p_match_winner(0), config.SR_TEMPERATURE))},
+            {"label": name1, "odds": m.odds2,
+             "model": lambda b: float(apply_temperature(
+                 b.p_match_winner(1), config.SR_TEMPERATURE))},
+        ]}}
+        if m.total_line is not None and m.over_odds and m.under_odds:
+            tg = m.total_line
+            mkts["Total games"] = {"selections": [
+                {"label": f"Over {tg}", "odds": m.over_odds,
+                 "model": lambda b: b.p_total_over(tg + config.SR_TOTAL_SHIFT)},
+                {"label": f"Under {tg}", "odds": m.under_odds,
+                 "model": lambda b: 1.0 - b.p_total_over(tg + config.SR_TOTAL_SHIFT)},
+            ]}
+        if m.hcap_line is not None and m.hcap_odds1 and m.hcap_odds2:
+            hl = m.hcap_line
+            mkts["Handicap games"] = {"selections": [
+                {"label": f"{name0} {hl:+}", "odds": m.hcap_odds1,
+                 "model": lambda b: float(apply_temperature(
+                     b.p_handicap(0, hl), config.SR_HANDICAP_TEMPERATURE))},
+                {"label": f"{name1} {-hl:+}", "odds": m.hcap_odds2,
+                 "model": lambda b: float(apply_temperature(
+                     b.p_handicap(1, -hl), config.SR_HANDICAP_TEMPERATURE))},
+            ]}
+        evl = evaluate_match(f"{name0} vs {name1}", book, mkts)
+        for vb in rank_value_bets(evl, min_edge=config.MIN_EDGE, min_prob=0.0):
+            if log_bet(player1=name0, player2=name1,
+                       commence_time=m.commence_time, sport_key=m.sport_key,
+                       market=vb.market, selection=vb.selection,
+                       odds=vb.odds, model_prob=vb.model_prob,
+                       edge=vb.edge, ev=vb.ev, kelly=vb.kelly,
+                       stake=10.0):
+                total += 1
+        scanned.add(mid)
+    return total
+
+
 def _fetch_matches():
     key = _api_key()
     if not key:
@@ -189,6 +250,9 @@ def _fetch_matches():
             if prev_sel not in new_matches:
                 st.session_state["live_sel"] = next(iter(new_matches))
             _apply_live_odds()
+            _n = _auto_log_all_matches()
+            if _n:
+                st.toast(f"✅ {_n} nuove bet registrate da {len(new_matches)} match.")
     except Exception as exc:
         st.session_state.pop("live_matches", None)
         st.session_state["_fetch_error"] = f"Errore API: {exc}"
@@ -499,10 +563,11 @@ with tab_analysis:
 with tab_perf:
     st.subheader("📊 Performance tracker")
     st.caption(
-        "Ogni value bet proposta viene registrata automaticamente con stake "
-        "simulato di **€10**. I risultati vengono aggiornati tramite "
-        "The Odds API Scores (solo mercato Match winner; gli altri mercati "
-        "vengono risolti quando i dati Tennis-Data.co.uk sono disponibili).")
+        "**Tutti** i match disponibili vengono analizzati automaticamente ad "
+        "ogni aggiornamento delle quote: ogni value bet con edge ≥ 3% e EV "
+        "positivo viene registrata con stake simulato di **€10** (Match winner, "
+        "Total games e Handicap). I risultati vengono aggiornati via "
+        "The Odds API Scores.")
 
     # ---- auto-check results every 5 minutes
     _now = time.time()
