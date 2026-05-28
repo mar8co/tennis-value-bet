@@ -599,12 +599,15 @@ with tab_perf:
 
     stats = performance_stats()
     n_resolved = stats["n_resolved"]
+    n_scanned = len(st.session_state.get("_scanned_match_ids", set()))
 
     # ---- summary metrics
     st.divider()
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Bet proposte", n_resolved + stats["n_pending"],
-              help="Risolte + in attesa di risultato")
+    m0, m1, m2, m3, m4, m5 = st.columns(6)
+    m0.metric("Partite analizzate", n_scanned or "—",
+              help="Match scansionati automaticamente in questa sessione")
+    m1.metric("Value bet trovate", n_resolved + stats["n_pending"],
+              help="Bets con edge ≥ 3% e EV > 0 su tutti i match · risolte + in attesa")
     m2.metric("Risolte", n_resolved)
     m3.metric("% Vittorie",
               f"{stats['win_rate'] * 100:.1f}%" if n_resolved else "—",
