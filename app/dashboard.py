@@ -650,12 +650,25 @@ with tab_perf:
     # ---- manual refresh button
     if st.button("🔄 Aggiorna risultati ora"):
         _total = 0
+        _msgs = []
         with st.spinner("Verifico risultati..."):
-            _total += update_from_espn()
+            try:
+                _n_espn = update_from_espn()
+                _msgs.append(f"ESPN: {_n_espn} risolti")
+                _total += _n_espn
+            except Exception as _e:
+                _msgs.append(f"ESPN errore: {_e}")
             if _key:
-                _total += update_results(_key, days_from=3)
+                try:
+                    _n_odds = update_results(_key, days_from=3)
+                    _msgs.append(f"Odds API: {_n_odds} risolti")
+                    _total += _n_odds
+                except Exception as _e:
+                    _msgs.append(f"Odds API errore: {_e}")
             st.session_state["_last_results_check"] = time.time()
-        st.success(f"✅ Risolti {_total} nuovi risultati." if _total else "0 nuovi risultati.")
+        st.info(" | ".join(_msgs))
+        if _total:
+            st.success(f"✅ Risolti {_total} nuovi risultati.")
         st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
