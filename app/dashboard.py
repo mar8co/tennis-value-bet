@@ -728,6 +728,68 @@ with tab_perf:
         _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
         st.write(f"ODDS_API_KEY: {'✅' if _key else '❌'}  |  RAPIDAPI_KEY: {'✅' if _rapi_key else '❌'}")
 
+        if st.button("⚡ Risolvi da ESPN direttamente"):
+            import requests as _req
+            from tvb.bet_tracker import (_norm_name as _nn, _match_one_name as _mon,
+                                          _resolve_match as _res, _read as _rd)
+            _pend3 = _rd("SELECT DISTINCT player1, player2, match_id FROM bets WHERE result='pending'")
+            # Fetch ESPN all dates from pending bets
+            _espn_pairs: dict = {}
+            _dates3 = set(str(ct)[:10] for ct in get_pending_matches()["commence_time"])
+            _dates3.add(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+            for _d3 in sorted(_dates3):
+                for _tour3 in ("atp", "wta"):
+                    _r3 = _req.get(
+                        f"https://site.api.espn.com/apis/site/v2/sports/tennis/{_tour3}/scoreboard",
+                        params={"dates": _d3.replace("-","")},
+                        headers={"User-Agent":"Mozilla/5.0"}, timeout=15)
+                    if _r3.status_code != 200:
+                        continue
+                    for _ev3 in _r3.json().get("events",[]):
+                        for _g3 in _ev3.get("groupings",[]):
+                            for _c3 in _g3.get("competitions",[]):
+                                _cx3 = _c3.get("competitors",[])
+                                _w3 = next((c for c in _cx3 if c.get("winner")), None)
+                                _l3 = next((c for c in _cx3 if not c.get("winner")), None)
+                                if not _w3 or not _l3:
+                                    continue
+                                _wn3 = (_w3.get("athlete",{}) or {}).get("displayName","") or _w3.get("displayName","")
+                                _ln3 = (_l3.get("athlete",{}) or {}).get("displayName","") or _l3.get("displayName","")
+                                if _wn3 and _ln3:
+                                    _espn_pairs[(_nn(_wn3),_nn(_ln3))] = _wn3
+                                    _espn_pairs[(_nn(_ln3),_nn(_wn3))] = _wn3
+
+            st.write(f"ESPN pairs trovati: {len(_espn_pairs)//2}")
+            _resolved3 = 0
+            _log3 = []
+            _seen3: set = set()
+            for _prow3 in _pend3.itertuples(index=False):
+                _pk3 = (_nn(_prow3.player1), _nn(_prow3.player2))
+                if _pk3 in _seen3:
+                    continue
+                _winner3 = None
+                for (_wk,_lk), _wv in _espn_pairs.items():
+                    if (_mon(_wk, _prow3.player1) and _mon(_lk, _prow3.player2)) or \
+                       (_mon(_wk, _prow3.player2) and _mon(_lk, _prow3.player1)):
+                        _winner3 = _wv
+                        break
+                if not _winner3:
+                    continue
+                _seen3.add(_pk3)
+                _db_w3 = _prow3.player1 if _mon(_winner3, _prow3.player1) else _prow3.player2
+                # Resolve ALL match_ids for this pair
+                _all_ids3 = _rd("SELECT DISTINCT match_id FROM bets WHERE result='pending' AND player1=:p1 AND player2=:p2",
+                                  {"p1": _prow3.player1, "p2": _prow3.player2})
+                for _mid3 in _all_ids3["match_id"]:
+                    _n3 = _res(_mid3, _db_w3)
+                    _resolved3 += _n3
+                if _all_ids3.shape[0] > 0:
+                    _log3.append(f"✅ {_prow3.player1} vs {_prow3.player2} → vincitore: {_db_w3} ({_all_ids3.shape[0]} match_id)")
+            st.write(f"**Risolti: {_resolved3}**")
+            if _log3:
+                st.code("\n".join(_log3))
+            st.rerun()
+
         if st.button("🔬 Test ESPN vs pending (debug)"):
             import requests as _req
             from tvb.bet_tracker import _norm_name as _nn, _match_one_name as _mon
