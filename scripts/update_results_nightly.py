@@ -33,7 +33,7 @@ def main() -> None:
             clear_sackmann_cache,
             init_tracker_db,
             update_from_sackmann,
-            update_from_sofascore,
+            update_from_rapidapi,
         )
     except Exception as exc:
         log.error("Failed to import bet_tracker: %s", exc)
@@ -49,14 +49,16 @@ def main() -> None:
     init_tracker_db()
     clear_sackmann_cache()
 
-    # Sofascore: real-time, copre ieri e oggi (tutti i livelli)
-    log.info("Fetching results from Sofascore...")
-    try:
-        n_sf = update_from_sofascore()
-        log.info("Sofascore: %d bet(s) resolved.", n_sf)
-    except Exception as exc:
-        log.warning("Sofascore update failed: %s", exc)
-        n_sf = 0
+    # RapidAPI: real-time, copre ieri e oggi
+    rapidapi_key = os.environ.get("RAPIDAPI_KEY", "")
+    n_rapi = 0
+    if rapidapi_key:
+        log.info("Fetching results from RapidAPI Tennis Live Data...")
+        try:
+            n_rapi = update_from_rapidapi(rapidapi_key)
+            log.info("RapidAPI: %d bet(s) resolved.", n_rapi)
+        except Exception as exc:
+            log.warning("RapidAPI update failed: %s", exc)
 
     # Sackmann: fonte storica affidabile per partite più vecchie
     log.info("Fetching results from Sackmann GitHub...")
@@ -67,7 +69,7 @@ def main() -> None:
         log.warning("Sackmann update failed: %s", exc)
         n_sack = 0
 
-    log.info("=== Done: %d total bet(s) resolved ===", n_sf + n_sack)
+    log.info("=== Done: %d total bet(s) resolved ===", n_rapi + n_sack)
 
 
 if __name__ == "__main__":

@@ -410,6 +410,158 @@ def update_results(api_key: str, days_from: int = 3) -> int:
     return total
 
 
+# ── RapidAPI Tennis Live Data ──────────────────────────────────────────────────
+_RAPIDAPI_HOST = "tennis-live-data.p.rapidapi.com"
+
+
+def _fetch_rapidapi_day(date_str: str, rapidapi_key: str) -> list:
+    """Fetch completed tennis matches from RapidAPI Tennis Live Data for one date."""
+    try:
+        resp = requests.get(
+            f"https://{_RAPIDAPI_HOST}/matches-by-date/{date_str}",
+            headers={
+                "X-RapidAPI-Key": rapidapi_key,
+                "X-RapidAPI-Host": _RAPIDAPI_HOST,
+            },
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        # API returns either {"results": [...]} or a list directly
+        if isinstance(data, list):
+            return data
+        for key in ("results", "response", "data", "matches"):
+            if key in data and isinstance(data[key], list):
+                return data[key]
+    except Exception:
+        pass
+    return []
+
+
+def _rapidapi_winner(match: dict) -> tuple[str | None, str | None, int | None]:
+    """
+    Parse a RapidAPI match dict.
+    Returns (home_name, away_name, winner_name) or (None, None, None) if not finished.
+    """
+    # Status check — different APIs use different field names
+    status = ""
+    for path in [("status", "long"), ("status",), ("match_status",), ("state",)]:
+        val = match
+        try:
+            for p in path:
+                val = val[p]
+            status = str(val).lower()
+            break
+        except (KeyError, TypeError):
+            continue
+
+    finished_terms = {"finished", "ended", "complete", "ft", "atp", "final", "closed"}
+    if not any(t in status for t in finished_terms):
+        return None, None, None
+
+    # Extract player names from common field patterns
+    home = away = ""
+    for h_path, a_path in [
+        (("home_team",), ("away_team",)),
+        (("home_competitor", "name"), ("away_competitor", "name")),
+        (("players", "home", "name"), ("players", "away", "name")),
+        (("player1",), ("player2",)),
+        (("home", "name"), ("away", "name")),
+    ]:
+        try:
+            h = match
+            for p in h_path:
+                h = h[p]
+            a = match
+            for p in a_path:
+                a = a[p]
+            if h and a:
+                home, away = str(h), str(a)
+                break
+        except (KeyError, TypeError):
+            continue
+
+    if not home or not away:
+        return None, None, None
+
+    # Extract scores
+    h_score = a_score = -1
+    for h_path, a_path in [
+        (("scores", "home", "score"), ("scores", "away", "score")),
+        (("home_score",), ("away_score",)),
+        (("score", "home"), ("score", "away")),
+        (("scores", "home"), ("scores", "away")),
+    ]:
+        try:
+            hs = match
+            for p in h_path:
+                hs = hs[p]
+            as_ = match
+            for p in a_path:
+                as_ = as_[p]
+            h_score, a_score = int(hs), int(as_)
+            break
+        except (KeyError, TypeError, ValueError):
+            continue
+
+    if h_score < 0 or a_score < 0 or h_score == a_score:
+        return home, away, None
+
+    winner = home if h_score > a_score else away
+    return home, away, winner
+
+
+def _update_from_rapidapi(rapidapi_key: str) -> int:
+    """Resolve pending bets using RapidAPI Tennis Live Data (real-time, free tier)."""
+    pending = _read(
+        "SELECT DISTINCT player1, player2, commence_time, match_id "
+        "FROM bets WHERE result = 'pending'")
+    if pending.empty:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    dates: set[str] = set()
+    for ct in pending["commence_time"]:
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            if (now - dt).days <= 7:
+                dates.add(dt.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+    dates.add(now.strftime("%Y-%m-%d"))
+
+    resolved = 0
+    done: set = set()
+
+    for date_str in sorted(dates):
+        for match in _fetch_rapidapi_day(date_str, rapidapi_key):
+            home, away, winner_ra = _rapidapi_winner(match)
+            if not winner_ra or not home or not away:
+                continue
+            for prow in pending.itertuples(index=False):
+                if prow.match_id in done:
+                    continue
+                if not _players_match(home, away, prow.player1, prow.player2):
+                    continue
+                db_winner = (prow.player1
+                             if _match_one_name(winner_ra, prow.player1)
+                             else prow.player2)
+                n = _resolve_match(prow.match_id, db_winner)
+                if n:
+                    resolved += n
+                    done.add(prow.match_id)
+                break
+
+    return resolved
+
+
+def update_from_rapidapi(rapidapi_key: str) -> int:
+    """Resolve pending bets using RapidAPI Tennis Live Data."""
+    init_tracker_db()
+    return _update_from_rapidapi(rapidapi_key)
+
+
 def update_from_sackmann() -> int:
     """Resolve pending bets using Sackmann GitHub data only (free, no API quota)."""
     init_tracker_db()
