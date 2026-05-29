@@ -33,6 +33,7 @@ def main() -> None:
             clear_sackmann_cache,
             init_tracker_db,
             update_from_sackmann,
+            update_from_sofascore,
         )
     except Exception as exc:
         log.error("Failed to import bet_tracker: %s", exc)
@@ -48,15 +49,25 @@ def main() -> None:
     init_tracker_db()
     clear_sackmann_cache()
 
+    # Sofascore: real-time, copre ieri e oggi (tutti i livelli)
+    log.info("Fetching results from Sofascore...")
+    try:
+        n_sf = update_from_sofascore()
+        log.info("Sofascore: %d bet(s) resolved.", n_sf)
+    except Exception as exc:
+        log.warning("Sofascore update failed: %s", exc)
+        n_sf = 0
+
+    # Sackmann: fonte storica affidabile per partite più vecchie
     log.info("Fetching results from Sackmann GitHub...")
     try:
-        n = update_from_sackmann()
-        log.info("Sackmann: %d bet(s) resolved.", n)
+        n_sack = update_from_sackmann()
+        log.info("Sackmann: %d bet(s) resolved.", n_sack)
     except Exception as exc:
         log.warning("Sackmann update failed: %s", exc)
-        n = 0
+        n_sack = 0
 
-    log.info("=== Done: %d total bet(s) resolved ===", n)
+    log.info("=== Done: %d total bet(s) resolved ===", n_sf + n_sack)
 
 
 if __name__ == "__main__":
