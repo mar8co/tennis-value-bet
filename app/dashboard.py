@@ -624,30 +624,17 @@ with tab_perf:
             "redeploy. Per uno storico permanente aggiungi `DATABASE_URL` nei "
             "*Secrets* dell'app (es. Supabase o Neon — entrambi gratuiti).")
 
-    # ---- auto-refresh UI ogni 60 s (richiede streamlit-autorefresh)
-    if _HAS_AUTOREFRESH:
-        _st_autorefresh(interval=60_000, key="perf_live_refresh")
-
     _now = time.time()
     _key = _api_key()
 
-    # Ogni ~60 s: Sackmann GitHub (gratuito, cache 1 h — nessuna quota consumata)
+    # Ogni ora: Sackmann GitHub (gratuito, nessuna quota consumata)
     _last_sack = st.session_state.get("_last_sackmann_check", 0)
-    if (_now - _last_sack) > 55:
+    if (_now - _last_sack) > 3600:
         _sack_n = update_from_sackmann()
         st.session_state["_last_sackmann_check"] = _now
         if _sack_n:
             st.toast(f"✅ {_sack_n} risultat{'o' if _sack_n == 1 else 'i'} "
                      f"aggiornati automaticamente.")
-
-    # Ogni 5 min: aggiorna anche da Odds API (usa quota API)
-    _last_check = st.session_state.get("_last_results_check", 0)
-    if _key and (_now - _last_check) > 300:
-        _resolved = update_results(_key)
-        st.session_state["_last_results_check"] = _now
-        if _resolved:
-            st.toast(f"✅ {_resolved} risultat{'o' if _resolved == 1 else 'i'} "
-                     f"aggiornati (Odds API).")
 
     st.caption(
         "ℹ️ I dati Sackmann vengono pubblicati su GitHub con 1–2 giorni di ritardo: "
