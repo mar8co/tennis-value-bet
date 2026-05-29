@@ -410,15 +410,15 @@ def update_results(api_key: str, days_from: int = 3) -> int:
     return total
 
 
-# ── RapidAPI Tennis Live Data ──────────────────────────────────────────────────
-_RAPIDAPI_HOST = "tennis-live-data.p.rapidapi.com"
+# ── RapidAPI "Tennis API - ATP WTA ITF" ───────────────────────────────────────
+_RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 
 
 def _fetch_rapidapi_day(date_str: str, rapidapi_key: str) -> list:
-    """Fetch completed tennis matches from RapidAPI Tennis Live Data for one date."""
+    """Fetch fixtures for date_str via Tennis API - ATP WTA ITF on RapidAPI."""
     try:
         resp = requests.get(
-            f"https://{_RAPIDAPI_HOST}/matches-by-date/{date_str}",
+            f"https://{_RAPIDAPI_HOST}/tennis/v2/fixture/date/{date_str}",
             headers={
                 "X-RapidAPI-Key": rapidapi_key,
                 "X-RapidAPI-Host": _RAPIDAPI_HOST,
@@ -428,10 +428,9 @@ def _fetch_rapidapi_day(date_str: str, rapidapi_key: str) -> list:
         if resp.status_code != 200:
             return []
         data = resp.json()
-        # API returns either {"results": [...]} or a list directly
         if isinstance(data, list):
             return data
-        for key in ("results", "response", "data", "matches"):
+        for key in ("result", "results", "data", "fixtures", "response"):
             if key in data and isinstance(data[key], list):
                 return data[key]
     except Exception:

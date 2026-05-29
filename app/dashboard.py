@@ -680,10 +680,11 @@ with tab_perf:
         if _rapi_key and st.button("Test RapidAPI (risposta grezza)"):
             import requests as _req
             _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            _host = "tennis-api-atp-wta-itf.p.rapidapi.com"
             _r = _req.get(
-                f"https://tennis-live-data.p.rapidapi.com/matches-by-date/{_today}",
+                f"https://{_host}/tennis/v2/fixture/date/{_today}",
                 headers={"X-RapidAPI-Key": _rapi_key,
-                         "X-RapidAPI-Host": "tennis-live-data.p.rapidapi.com"},
+                         "X-RapidAPI-Host": _host},
                 timeout=15)
             st.write(f"Status HTTP: {_r.status_code}")
             try:
