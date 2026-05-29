@@ -666,10 +666,14 @@ with tab_perf:
                 except Exception as _e:
                     _msgs.append(f"Odds API errore: {_e}")
             st.session_state["_last_results_check"] = time.time()
-        st.info(" | ".join(_msgs))
-        if _total:
-            st.success(f"✅ Risolti {_total} nuovi risultati.")
+        st.session_state["_update_msg"] = " | ".join(_msgs)
+        st.session_state["_update_total"] = _total
         st.rerun()
+
+    if "_update_msg" in st.session_state:
+        st.info(st.session_state["_update_msg"])
+        if st.session_state.get("_update_total", 0):
+            st.success(f"✅ Risolti {st.session_state['_update_total']} nuovi risultati.")
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
                     st.session_state.get("_last_results_check", 0))
