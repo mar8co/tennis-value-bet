@@ -410,6 +410,94 @@ def update_results(api_key: str, days_from: int = 3) -> int:
     return total
 
 
+# ── ESPN hidden API (free, no auth, real-time results) ────────────────────────
+_ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/tennis"
+
+
+def _fetch_espn_day(date_str: str) -> list[tuple[str, str]]:
+    """
+    Return list of (winner_name, loser_name) for all finished tennis matches
+    on date_str (YYYY-MM-DD) from ESPN, covering ATP + WTA.
+    """
+    date_nodash = date_str.replace("-", "")
+    results = []
+    for tour in ("atp", "wta"):
+        try:
+            resp = requests.get(
+                f"{_ESPN_BASE}/{tour}/scoreboard",
+                params={"dates": date_nodash},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            for event in data.get("events", []):
+                for grp in event.get("groupings", []):
+                    for comp in grp.get("competitions", []):
+                        competitors = comp.get("competitors", [])
+                        if len(competitors) < 2:
+                            continue
+                        winner = next((c for c in competitors if c.get("winner")), None)
+                        loser  = next((c for c in competitors if not c.get("winner")), None)
+                        if not winner or not loser:
+                            continue
+                        w_name = winner.get("athlete", {}).get("displayName", "")
+                        l_name = loser.get("athlete", {}).get("displayName", "")
+                        if w_name and l_name:
+                            results.append((w_name, l_name))
+        except Exception:
+            continue
+    return results
+
+
+def _update_from_espn() -> int:
+    """Resolve pending bets using ESPN hidden API (free, real-time, ATP + WTA)."""
+    pending = _read(
+        "SELECT DISTINCT player1, player2, commence_time, match_id "
+        "FROM bets WHERE result = 'pending'")
+    if pending.empty:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    dates: set[str] = set()
+    for ct in pending["commence_time"]:
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            if (now - dt).days <= 14:
+                dates.add(dt.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+    dates.add(now.strftime("%Y-%m-%d"))
+
+    resolved = 0
+    done: set = set()
+
+    for date_str in sorted(dates):
+        for winner_espn, loser_espn in _fetch_espn_day(date_str):
+            for prow in pending.itertuples(index=False):
+                if prow.match_id in done:
+                    continue
+                if not _players_match(winner_espn, loser_espn, prow.player1, prow.player2):
+                    continue
+                db_winner = (prow.player1
+                             if _match_one_name(winner_espn, prow.player1)
+                             else prow.player2)
+                n = _resolve_match(prow.match_id, db_winner)
+                if n:
+                    resolved += n
+                    done.add(prow.match_id)
+                break
+
+    return resolved
+
+
+def update_from_espn() -> int:
+    """Resolve pending bets using ESPN (free, no auth, real-time ATP + WTA)."""
+    init_tracker_db()
+    return _update_from_espn()
+
+
 # ── RapidAPI "Tennis API - ATP WTA ITF" ───────────────────────────────────────
 _RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 

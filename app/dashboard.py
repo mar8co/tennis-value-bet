@@ -76,6 +76,11 @@ try:
 except Exception:
     def update_from_rapidapi(k): return 0  # type: ignore[misc]
 
+try:
+    from tvb.bet_tracker import update_from_espn
+except Exception:
+    def update_from_espn(): return 0  # type: ignore[misc]
+
 
 try:
     from streamlit_autorefresh import st_autorefresh as _st_autorefresh
@@ -644,18 +649,13 @@ with tab_perf:
 
     # ---- manual refresh button
     if st.button("🔄 Aggiorna risultati ora"):
-        _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
         _total = 0
         with st.spinner("Verifico risultati..."):
-            if _rapi_key:
-                _total += update_from_rapidapi(_rapi_key)
+            _total += update_from_espn()
             if _key:
                 _total += update_results(_key, days_from=3)
             st.session_state["_last_results_check"] = time.time()
-        if not _rapi_key and not _key:
-            st.error("❌ Nessuna API key configurata (RAPIDAPI_KEY o ODDS_API_KEY).")
-        else:
-            st.success(f"✅ Risolti {_total} nuovi risultati." if _total else "0 nuovi risultati.")
+        st.success(f"✅ Risolti {_total} nuovi risultati." if _total else "0 nuovi risultati.")
         st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),

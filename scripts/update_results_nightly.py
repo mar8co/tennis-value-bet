@@ -33,7 +33,7 @@ def main() -> None:
             clear_sackmann_cache,
             init_tracker_db,
             update_from_sackmann,
-            update_from_rapidapi,
+            update_from_espn,
         )
     except Exception as exc:
         log.error("Failed to import bet_tracker: %s", exc)
@@ -49,16 +49,14 @@ def main() -> None:
     init_tracker_db()
     clear_sackmann_cache()
 
-    # RapidAPI: real-time, copre ieri e oggi
-    rapidapi_key = os.environ.get("RAPIDAPI_KEY", "")
-    n_rapi = 0
-    if rapidapi_key:
-        log.info("Fetching results from RapidAPI Tennis Live Data...")
-        try:
-            n_rapi = update_from_rapidapi(rapidapi_key)
-            log.info("RapidAPI: %d bet(s) resolved.", n_rapi)
-        except Exception as exc:
-            log.warning("RapidAPI update failed: %s", exc)
+    # ESPN: free, no auth, real-time ATP + WTA results
+    log.info("Fetching results from ESPN...")
+    try:
+        n_rapi = update_from_espn()
+        log.info("ESPN: %d bet(s) resolved.", n_rapi)
+    except Exception as exc:
+        log.warning("ESPN update failed: %s", exc)
+        n_rapi = 0
 
     # Sackmann: fonte storica affidabile per partite più vecchie
     log.info("Fetching results from Sackmann GitHub...")
