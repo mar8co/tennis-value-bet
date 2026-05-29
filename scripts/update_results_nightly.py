@@ -44,6 +44,12 @@ def main() -> None:
         log.error("Failed to import bet_tracker: %s", exc)
         sys.exit(1)
 
+    db_url = os.environ.get("DATABASE_URL", "")
+    if db_url:
+        log.info("DATABASE_URL scheme: %s", db_url.split("://")[0] if "://" in db_url else f"NO SCHEME — starts with: {db_url[:30]!r}")
+    else:
+        log.info("DATABASE_URL not set — using local SQLite")
+
     init_tracker_db()
 
     # Force fresh download from Sackmann GitHub (ignore 1-hour cache).
