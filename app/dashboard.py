@@ -788,7 +788,8 @@ with tab_perf:
             st.write(f"**Risolti: {_resolved3}**")
             if _log3:
                 st.code("\n".join(_log3))
-            st.rerun()
+            else:
+                st.warning("Nessuna partita trovata in ESPN da risolvere.")
 
         if st.button("🔬 Test ESPN vs pending (debug)"):
             import requests as _req
