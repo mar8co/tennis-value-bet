@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(python -c \"from tvb.bet_tracker import update_results, _update_from_sackmann, _sackmann_recent; print\\('import OK'\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }

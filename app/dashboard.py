@@ -65,6 +65,19 @@ except Exception:
     def scores_debug(api_key): return []  # type: ignore[misc]
     def get_pending_matches(tour=""): import pandas as pd; return pd.DataFrame()  # type: ignore[misc]
 
+try:
+    from tvb.bet_tracker import update_from_sackmann, clear_sackmann_cache
+except Exception:
+    def update_from_sackmann(): return 0  # type: ignore[misc]
+    def clear_sackmann_cache(): pass  # type: ignore[misc]
+
+try:
+    from streamlit_autorefresh import st_autorefresh as _st_autorefresh
+    _HAS_AUTOREFRESH = True
+except ImportError:
+    _HAS_AUTOREFRESH = False
+    def _st_autorefresh(*a, **kw): return 0  # type: ignore[misc]
+
 st.set_page_config(page_title="Tennis Value Bet", layout="wide",
                    initial_sidebar_state="collapsed")
 
@@ -611,33 +624,59 @@ with tab_perf:
             "redeploy. Per uno storico permanente aggiungi `DATABASE_URL` nei "
             "*Secrets* dell'app (es. Supabase o Neon — entrambi gratuiti).")
 
-    # ---- auto-check results every 5 minutes
+    # ---- auto-refresh UI ogni 60 s (richiede streamlit-autorefresh)
+    if _HAS_AUTOREFRESH:
+        _st_autorefresh(interval=60_000, key="perf_live_refresh")
+
     _now = time.time()
-    _last_check = st.session_state.get("_last_results_check", 0)
     _key = _api_key()
+
+    # Ogni ~60 s: Sackmann GitHub (gratuito, cache 1 h — nessuna quota consumata)
+    _last_sack = st.session_state.get("_last_sackmann_check", 0)
+    if (_now - _last_sack) > 55:
+        _sack_n = update_from_sackmann()
+        st.session_state["_last_sackmann_check"] = _now
+        if _sack_n:
+            st.toast(f"✅ {_sack_n} risultat{'o' if _sack_n == 1 else 'i'} "
+                     f"aggiornati automaticamente.")
+
+    # Ogni 5 min: aggiorna anche da Odds API (usa quota API)
+    _last_check = st.session_state.get("_last_results_check", 0)
     if _key and (_now - _last_check) > 300:
         _resolved = update_results(_key)
         st.session_state["_last_results_check"] = _now
         if _resolved:
             st.toast(f"✅ {_resolved} risultat{'o' if _resolved == 1 else 'i'} "
-                     f"aggiornati automaticamente.")
+                     f"aggiornati (Odds API).")
+
+    st.caption(
+        "ℹ️ I dati Sackmann vengono pubblicati su GitHub con 1–2 giorni di ritardo: "
+        "le partite di ieri potrebbero comparire solo domani. "
+        "L'aggiornamento automatico notturno avviene via GitHub Actions (01:00 UTC).")
 
     # ---- manual refresh button
     col_btn, col_ts = st.columns([2, 5])
     if col_btn.button("🔄 Aggiorna risultati ora"):
-        if _key:
-            with st.spinner("Verifico risultati..."):
+        clear_sackmann_cache()
+        with st.spinner("Verifico risultati..."):
+            if _key:
                 _n = update_results(_key)
-            st.session_state["_last_results_check"] = time.time()
-            st.success(f"Risolti {_n} nuovi risultati." if _n
-                       else "Nessun nuovo risultato disponibile.")
-            st.rerun()
-        else:
-            st.warning("Configura prima la chiave API (Impostazioni).")
-    if _last_check:
+                st.session_state["_last_results_check"] = time.time()
+            else:
+                _n = update_from_sackmann()
+            st.session_state["_last_sackmann_check"] = time.time()
+        st.success(f"Risolti {_n} nuovi risultati." if _n
+                   else "Nessun nuovo risultato disponibile.")
+        st.rerun()
+
+    _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
+                    st.session_state.get("_last_results_check", 0))
+    if _last_upd:
+        _live_badge = "  🔴 **Live**" if _HAS_AUTOREFRESH else ""
         col_ts.caption(
             f"Ultimo aggiornamento: "
-            f"{datetime.fromtimestamp(_last_check, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
+            f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}"
+            f"{_live_badge}")
 
     # ---- tour filter
     st.divider()
