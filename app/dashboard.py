@@ -664,6 +664,48 @@ with tab_perf:
         st.caption(f"Ultimo aggiornamento: "
                    f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
 
+    # ---- audit duplicati
+    with st.expander("🔎 Audit dati — cerca duplicati", expanded=False):
+        st.caption("Verifica se la stessa partita è stata loggata più volte con match_id diversi.")
+        if st.button("Analizza duplicati nel DB"):
+            from tvb.bet_tracker import _read as _bt_read, _engine, _is_pg
+            # substr(commence_time,1,10) funziona sia su SQLite che PostgreSQL
+            _dup = _bt_read("""
+                SELECT player1, player2,
+                       substr(commence_time, 1, 10) as match_date,
+                       market, selection,
+                       COUNT(DISTINCT match_id) as n_match_ids,
+                       COUNT(*) as n_bets,
+                       SUM(CASE WHEN result='won' THEN 1 ELSE 0 END) as n_won
+                FROM bets
+                GROUP BY player1, player2, substr(commence_time, 1, 10), market, selection
+                HAVING COUNT(DISTINCT match_id) > 1
+                ORDER BY n_match_ids DESC
+            """)
+            if _dup.empty:
+                st.success("✅ Nessun duplicato trovato.")
+            else:
+                st.error(f"⚠️ Trovati {len(_dup)} gruppi con duplicati!")
+                st.dataframe(_dup, use_container_width=True)
+                st.session_state["_has_duplicates"] = True
+
+        if st.session_state.get("_has_duplicates"):
+            if st.button("🗑️ Elimina duplicati (mantieni solo il primo per ogni match)"):
+                from tvb.bet_tracker import _engine as _eng
+                from sqlalchemy import text as _sqlt
+                with _eng().begin() as _conn:
+                    _conn.execute(_sqlt("""
+                        DELETE FROM bets WHERE id NOT IN (
+                            SELECT MIN(id) FROM bets
+                            GROUP BY player1, player2,
+                                     substr(commence_time, 1, 10),
+                                     market, selection
+                        )
+                    """))
+                st.success("Duplicati eliminati.")
+                st.session_state.pop("_has_duplicates", None)
+                st.rerun()
+
     # ---- diagnostica API
     with st.expander("🔍 Diagnostica API", expanded=False):
         _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
