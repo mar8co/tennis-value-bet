@@ -758,6 +758,10 @@ def _resolve_match(match_id: str, winner: str,
     return count
 
 
+# Markets the system can auto-resolve. Others are voided when match finishes.
+_RESOLVABLE_MARKETS = {"Match winner", "Total games"}
+
+
 def _evaluate_bet(market: str, selection: str, winner: str,
                   total_games: int | None = None) -> bool | None:
     if market == "Match winner":
@@ -775,6 +779,53 @@ def _evaluate_bet(market: str, selection: str, winner: str,
             except ValueError:
                 pass
     return None
+
+
+def void_unresolvable_bets() -> int:
+    """
+    Mark pending bets for markets we can't auto-resolve (Handicap games,
+    Vincente 1° set, Tie-break, etc.) as 'void' when the match is over.
+    A bet is considered 'over' when at least one other bet on the same
+    match_id has already been resolved (won/lost).
+    Returns count of voided bets.
+    """
+    init_tracker_db()
+    # Find match_ids that have at least one resolved bet (match is over)
+    # but still have pending bets on non-resolvable markets
+    sql = """
+        SELECT b.id, b.market
+        FROM bets b
+        WHERE b.result = 'pending'
+          AND b.market NOT IN ('Match winner', 'Total games')
+          AND EXISTS (
+              SELECT 1 FROM bets b2
+              WHERE b2.match_id = b.match_id
+                AND b2.result IN ('won', 'lost')
+          )
+    """
+    pending_void = _read(sql)
+    if pending_void.empty:
+        return 0
+
+    now = datetime.now(timezone.utc).isoformat()
+    count = 0
+    for row in pending_void.itertuples(index=False):
+        try:
+            if _SA:
+                with _engine().begin() as conn:
+                    conn.execute(
+                        _sa_text("UPDATE bets SET result='void', profit=0, "
+                                 "resolved_at=:ra WHERE id=:id"),
+                        {"ra": now, "id": int(row.id)})
+            else:
+                with sqlite3.connect(DB_PATH) as conn:
+                    conn.execute(
+                        "UPDATE bets SET result='void', profit=0, resolved_at=? WHERE id=?",
+                        (now, int(row.id)))
+            count += 1
+        except Exception:
+            pass
+    return count
 
 
 def get_pending_matches(tour: str = "") -> pd.DataFrame:
@@ -821,7 +872,7 @@ def performance_stats(tour: str = "") -> dict:
     p = {"tour": tour} if tour else {}
     resolved = _read(
         f"SELECT result, stake, profit FROM bets "
-        f"WHERE result != 'pending' {tc}", p)
+        f"WHERE result IN ('won','lost') {tc}", p)
     n_pending = int(_read(
         f"SELECT COUNT(*) AS c FROM bets WHERE result='pending' {tc}", p
     ).iloc[0, 0])

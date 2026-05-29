@@ -81,6 +81,11 @@ try:
 except Exception:
     def update_from_espn(): return 0  # type: ignore[misc]
 
+try:
+    from tvb.bet_tracker import void_unresolvable_bets
+except Exception:
+    def void_unresolvable_bets(): return 0  # type: ignore[misc]
+
 
 try:
     from streamlit_autorefresh import st_autorefresh as _st_autorefresh
@@ -665,6 +670,12 @@ with tab_perf:
                     _total += _n_odds
                 except Exception as _e:
                     _msgs.append(f"Odds API errore: {_e}")
+            try:
+                _n_void = void_unresolvable_bets()
+                if _n_void:
+                    _msgs.append(f"Annullati: {_n_void} (mercati non risolvibili)")
+            except Exception as _e:
+                _msgs.append(f"Void errore: {_e}")
             st.session_state["_last_results_check"] = time.time()
         st.session_state["_update_msg"] = " | ".join(_msgs)
         st.session_state["_update_total"] = _total
