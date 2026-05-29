@@ -637,48 +637,44 @@ with tab_perf:
             st.toast(f"✅ {_sack_n} risultat{'o' if _sack_n == 1 else 'i'} "
                      f"aggiornati automaticamente.")
 
-    st.caption(
-        "ℹ️ I dati Sackmann vengono pubblicati su GitHub con 1–2 giorni di ritardo: "
-        "le partite di ieri potrebbero comparire solo domani. "
-        "L'aggiornamento automatico notturno avviene via GitHub Actions (01:00 UTC).")
-
     # ---- manual refresh button
-    col_btn, col_debug = st.columns([2, 3])
-    _show_debug = col_debug.checkbox("Mostra debug API", value=False)
-    if col_btn.button("🔄 Aggiorna risultati ora"):
+    if st.button("🔄 Aggiorna risultati ora"):
         if not _key:
             st.error("❌ ODDS_API_KEY non trovata nei Secrets di Streamlit.")
         else:
             with st.spinner("Verifico risultati via Odds API..."):
                 _n = update_results(_key, days_from=3)
                 st.session_state["_last_results_check"] = time.time()
-            if _n:
-                st.success(f"✅ Risolti {_n} nuovi risultati.")
-            else:
-                st.warning("0 risultati risolti.")
-            if _show_debug:
-                with st.spinner("Carico debug..."):
-                    _dbg = scores_debug(_key)
-                if _dbg:
-                    for _d in _dbg:
-                        st.write(f"**{_d['sport_key']}** — "
-                                 f"eventi totali: {_d['total_events']}, "
-                                 f"completati: {_d['completed']}, "
-                                 f"matched pending: {_d['matched_pending']}")
-                        if _d["sample_completed"]:
-                            st.json(_d["sample_completed"])
-                else:
-                    st.info("Nessun dato dall'API (nessuna partita pending o chiave non valida).")
-            st.rerun()
+            st.success(f"✅ Risolti {_n} nuovi risultati." if _n else "0 nuovi risultati.")
+        st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
                     st.session_state.get("_last_results_check", 0))
     if _last_upd:
-        _live_badge = "  🔴 **Live**" if _HAS_AUTOREFRESH else ""
-        col_debug.caption(
-            f"Ultimo aggiornamento: "
-            f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}"
-            f"{_live_badge}")
+        st.caption(f"Ultimo aggiornamento: "
+                   f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
+
+    # ---- diagnostica API
+    with st.expander("🔍 Diagnostica Odds API", expanded=False):
+        if not _key:
+            st.warning("ODDS_API_KEY non configurata.")
+        else:
+            _pend = get_pending_matches()
+            if _pend.empty:
+                st.info("Nessuna partita pending nel database.")
+            else:
+                st.write(f"**Partite pending:** {len(_pend)}")
+                st.dataframe(_pend[["player1", "player2", "commence_time", "sport_key"]],
+                             use_container_width=True)
+                if st.button("Chiama Odds API scores (debug)"):
+                    _dbg = scores_debug(_key)
+                    if not _dbg:
+                        st.error("L'API non ha restituito dati. Quota esaurita o sport_key non valida.")
+                    for _d in _dbg:
+                        st.markdown(f"**`{_d['sport_key']}`** — totali: {_d['total_events']} | "
+                                    f"completati: {_d['completed']} | matched: {_d['matched_pending']}")
+                        if _d["sample_completed"]:
+                            st.json(_d["sample_completed"])
 
     # ---- tour filter
     st.divider()
