@@ -728,6 +728,41 @@ with tab_perf:
         _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
         st.write(f"ODDS_API_KEY: {'✅' if _key else '❌'}  |  RAPIDAPI_KEY: {'✅' if _rapi_key else '❌'}")
 
+        if st.button("🔬 Test ESPN diretto (debug)"):
+            import requests as _req
+            _pend2 = get_pending_matches()
+            _dates2 = set()
+            for _ct in _pend2["commence_time"]:
+                try:
+                    _dates2.add(str(_ct)[:10])
+                except Exception:
+                    pass
+            st.write(f"Date da interrogare: {sorted(_dates2)}")
+            for _d in sorted(_dates2)[-3:]:  # ultime 3 date
+                _date_nodash = _d.replace("-", "")
+                for _tour in ("atp", "wta"):
+                    _r2 = _req.get(
+                        f"https://site.api.espn.com/apis/site/v2/sports/tennis/{_tour}/scoreboard",
+                        params={"dates": _date_nodash},
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=15)
+                    if _r2.status_code != 200:
+                        st.write(f"{_tour.upper()} {_d}: HTTP {_r2.status_code}")
+                        continue
+                    _data2 = _r2.json()
+                    _winners2 = []
+                    for _ev in _data2.get("events", []):
+                        for _grp in _ev.get("groupings", []):
+                            for _comp in _grp.get("competitions", []):
+                                _cx = _comp.get("competitors", [])
+                                _w = next((c for c in _cx if c.get("winner")), None)
+                                _l = next((c for c in _cx if not c.get("winner")), None)
+                                if _w and _l:
+                                    _winners2.append(f"{_w.get('athlete',{}).get('displayName','?')} def. {_l.get('athlete',{}).get('displayName','?')}")
+                    st.write(f"**{_tour.upper()} {_d}**: {len(_winners2)} risultati")
+                    if _winners2:
+                        st.code("\n".join(_winners2[:20]))
+
         _pend = get_pending_matches()
         if _pend.empty:
             st.info("Nessuna partita pending nel database.")
