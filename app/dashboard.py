@@ -665,26 +665,41 @@ with tab_perf:
                    f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
 
     # ---- diagnostica API
-    with st.expander("🔍 Diagnostica Odds API", expanded=False):
-        if not _key:
-            st.warning("ODDS_API_KEY non configurata.")
+    with st.expander("🔍 Diagnostica API", expanded=False):
+        _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
+        st.write(f"ODDS_API_KEY: {'✅' if _key else '❌'}  |  RAPIDAPI_KEY: {'✅' if _rapi_key else '❌'}")
+
+        _pend = get_pending_matches()
+        if _pend.empty:
+            st.info("Nessuna partita pending nel database.")
         else:
-            _pend = get_pending_matches()
-            if _pend.empty:
-                st.info("Nessuna partita pending nel database.")
-            else:
-                st.write(f"**Partite pending:** {len(_pend)}")
-                st.dataframe(_pend[["player1", "player2", "commence_time", "sport_key"]],
-                             use_container_width=True)
-                if st.button("Chiama Odds API scores (debug)"):
-                    _dbg = scores_debug(_key)
-                    if not _dbg:
-                        st.error("L'API non ha restituito dati. Quota esaurita o sport_key non valida.")
-                    for _d in _dbg:
-                        st.markdown(f"**`{_d['sport_key']}`** — totali: {_d['total_events']} | "
-                                    f"completati: {_d['completed']} | matched: {_d['matched_pending']}")
-                        if _d["sample_completed"]:
-                            st.json(_d["sample_completed"])
+            st.write(f"**Partite pending:** {len(_pend)}")
+            st.dataframe(_pend[["player1", "player2", "commence_time", "sport_key"]],
+                         use_container_width=True)
+
+        if _rapi_key and st.button("Test RapidAPI (risposta grezza)"):
+            import requests as _req
+            _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            _r = _req.get(
+                f"https://tennis-live-data.p.rapidapi.com/matches-by-date/{_today}",
+                headers={"X-RapidAPI-Key": _rapi_key,
+                         "X-RapidAPI-Host": "tennis-live-data.p.rapidapi.com"},
+                timeout=15)
+            st.write(f"Status HTTP: {_r.status_code}")
+            try:
+                st.json(_r.json())
+            except Exception:
+                st.code(_r.text[:2000])
+
+        if _key and st.button("Test Odds API scores (debug)"):
+            _dbg = scores_debug(_key)
+            if not _dbg:
+                st.error("Nessun dato dall'Odds API.")
+            for _d in _dbg:
+                st.markdown(f"**`{_d['sport_key']}`** — totali: {_d['total_events']} | "
+                            f"completati: {_d['completed']} | matched: {_d['matched_pending']}")
+                if _d["sample_completed"]:
+                    st.json(_d["sample_completed"])
 
     # ---- tour filter
     st.divider()
