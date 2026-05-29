@@ -38,7 +38,8 @@ def _engine():
         return None
     if _ENGINE is None:
         if _DATABASE_URL:
-            _ENGINE = create_engine(_DATABASE_URL, pool_pre_ping=True)
+            url = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
+            _ENGINE = create_engine(url, pool_pre_ping=True)
         else:
             _ENGINE = create_engine(
                 f"sqlite:///{DB_PATH}",
