@@ -728,40 +728,55 @@ with tab_perf:
         _rapi_key = os.environ.get("RAPIDAPI_KEY", "")
         st.write(f"ODDS_API_KEY: {'✅' if _key else '❌'}  |  RAPIDAPI_KEY: {'✅' if _rapi_key else '❌'}")
 
-        if st.button("🔬 Test ESPN diretto (debug)"):
+        if st.button("🔬 Test ESPN vs pending (debug)"):
             import requests as _req
+            from tvb.bet_tracker import _norm_name as _nn, _match_one_name as _mon
             _pend2 = get_pending_matches()
-            _dates2 = set()
-            for _ct in _pend2["commence_time"]:
-                try:
-                    _dates2.add(str(_ct)[:10])
-                except Exception:
-                    pass
-            st.write(f"Date da interrogare: {sorted(_dates2)}")
-            for _d in sorted(_dates2)[-3:]:  # ultime 3 date
-                _date_nodash = _d.replace("-", "")
-                for _tour in ("atp", "wta"):
-                    _r2 = _req.get(
-                        f"https://site.api.espn.com/apis/site/v2/sports/tennis/{_tour}/scoreboard",
-                        params={"dates": _date_nodash},
-                        headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=15)
-                    if _r2.status_code != 200:
-                        st.write(f"{_tour.upper()} {_d}: HTTP {_r2.status_code}")
-                        continue
-                    _data2 = _r2.json()
-                    _winners2 = []
-                    for _ev in _data2.get("events", []):
+
+            # Fetch ESPN for yesterday+today
+            _all_espn = []
+            for _d in [
+                (datetime.now(timezone.utc) - __import__("datetime").timedelta(days=1)).strftime("%Y-%m-%d"),
+                datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            ]:
+                _r2 = _req.get(
+                    "https://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+                    params={"dates": _d.replace("-", "")},
+                    headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+                if _r2.status_code == 200:
+                    for _ev in _r2.json().get("events", []):
                         for _grp in _ev.get("groupings", []):
                             for _comp in _grp.get("competitions", []):
                                 _cx = _comp.get("competitors", [])
                                 _w = next((c for c in _cx if c.get("winner")), None)
                                 _l = next((c for c in _cx if not c.get("winner")), None)
                                 if _w and _l:
-                                    _winners2.append(f"{_w.get('athlete',{}).get('displayName','?')} def. {_l.get('athlete',{}).get('displayName','?')}")
-                    st.write(f"**{_tour.upper()} {_d}**: {len(_winners2)} risultati")
-                    if _winners2:
-                        st.code("\n".join(_winners2[:20]))
+                                    _all_espn.append((
+                                        _w["athlete"].get("displayName",""),
+                                        _l["athlete"].get("displayName","")
+                                    ))
+
+            st.write(f"Totale risultati ESPN: {len(_all_espn)}")
+
+            # Check each pending match
+            _found, _notfound = [], []
+            for _prow in _pend2.itertuples(index=False):
+                _match = None
+                for _we, _le in _all_espn:
+                    if (_mon(_we, _prow.player1) and _mon(_le, _prow.player2)) or \
+                       (_mon(_we, _prow.player2) and _mon(_le, _prow.player1)):
+                        _match = f"{_we} def. {_le}"
+                        break
+                if _match:
+                    _found.append(f"✅ {_prow.player1} vs {_prow.player2} → {_match}")
+                else:
+                    _notfound.append(f"❌ {_prow.player1} vs {_prow.player2}")
+
+            st.write(f"**Trovati:** {len(_found)} | **Non trovati:** {len(_notfound)}")
+            if _found:
+                st.code("\n".join(_found[:20]))
+            if _notfound:
+                st.code("\n".join(_notfound[:20]))
 
         _pend = get_pending_matches()
         if _pend.empty:
