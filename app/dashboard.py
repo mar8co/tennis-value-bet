@@ -643,10 +643,11 @@ with tab_perf:
         "L'aggiornamento automatico notturno avviene via GitHub Actions (01:00 UTC).")
 
     # ---- manual refresh button
-    col_btn, col_ts = st.columns([2, 5])
+    col_btn, col_debug = st.columns([2, 3])
+    _show_debug = col_debug.checkbox("Mostra debug API", value=False)
     if col_btn.button("🔄 Aggiorna risultati ora"):
         if not _key:
-            st.error("❌ **ODDS_API_KEY non trovata.** Vai su Streamlit Cloud → App → Settings → Secrets e aggiungi:\n```\nODDS_API_KEY = \"la-tua-chiave\"\n```")
+            st.error("❌ ODDS_API_KEY non trovata nei Secrets di Streamlit.")
         else:
             with st.spinner("Verifico risultati via Odds API..."):
                 _n = update_results(_key, days_from=3)
@@ -654,19 +655,20 @@ with tab_perf:
             if _n:
                 st.success(f"✅ Risolti {_n} nuovi risultati.")
             else:
-                # Mostra quante partite pending ci sono e con quali sport_key
-                from tvb.bet_tracker import get_pending_matches as _gpm
-                _pend = _gpm()
-                if _pend.empty:
-                    st.info("Nessuna partita pending nel database.")
+                st.warning("0 risultati risolti.")
+            if _show_debug:
+                with st.spinner("Carico debug..."):
+                    _dbg = scores_debug(_key)
+                if _dbg:
+                    for _d in _dbg:
+                        st.write(f"**{_d['sport_key']}** — "
+                                 f"eventi totali: {_d['total_events']}, "
+                                 f"completati: {_d['completed']}, "
+                                 f"matched pending: {_d['matched_pending']}")
+                        if _d["sample_completed"]:
+                            st.json(_d["sample_completed"])
                 else:
-                    _keys = ", ".join(_pend["sport_key"].unique().tolist())
-                    st.warning(
-                        f"0 risultati risolti. Le Odds API non hanno ancora i risultati "
-                        f"per queste partite oppure le partite non sono ancora segnate come "
-                        f"completate nel loro sistema.\n\n"
-                        f"**Sport key nel DB:** `{_keys}`\n\n"
-                        f"**Partite pending:** {len(_pend)}")
+                    st.info("Nessun dato dall'API (nessuna partita pending o chiave non valida).")
             st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
