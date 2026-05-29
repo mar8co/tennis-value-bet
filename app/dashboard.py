@@ -751,10 +751,10 @@ with tab_perf:
                                 _w = next((c for c in _cx if c.get("winner")), None)
                                 _l = next((c for c in _cx if not c.get("winner")), None)
                                 if _w and _l:
-                                    _all_espn.append((
-                                        _w["athlete"].get("displayName",""),
-                                        _l["athlete"].get("displayName","")
-                                    ))
+                                    _wn = _w.get("athlete",{}).get("displayName","") or _w.get("displayName","")
+                                    _ln = _l.get("athlete",{}).get("displayName","") or _l.get("displayName","")
+                                    if _wn and _ln:
+                                        _all_espn.append((_wn, _ln))
 
             st.write(f"Totale risultati ESPN: {len(_all_espn)}")
 
