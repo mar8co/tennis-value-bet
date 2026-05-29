@@ -391,6 +391,120 @@ def _update_from_sackmann() -> int:
     return resolved
 
 
+# ── Sofascore-based result resolution (unofficial JSON API, free, real-time) ───
+_SF_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://www.sofascore.com/",
+    "Accept": "application/json",
+}
+_SF_BASE = "https://api.sofascore.com/api/v1"
+
+
+def _fetch_sofascore_day(date_str: str) -> list:
+    """Fetch all tennis events from Sofascore for date_str (YYYY-MM-DD)."""
+    try:
+        resp = requests.get(
+            f"{_SF_BASE}/sport/tennis/scheduled-events/{date_str}",
+            headers=_SF_HEADERS, timeout=15)
+        if resp.status_code == 200:
+            return resp.json().get("events", [])
+    except Exception:
+        pass
+    return []
+
+
+def _sofascore_winner_and_games(event: dict) -> tuple[str | None, int | None]:
+    """Return (winner_name, total_games) from a finished Sofascore event."""
+    if event.get("status", {}).get("type") != "finished":
+        return None, None
+    home = event.get("homeTeam", {}).get("name", "")
+    away = event.get("awayTeam", {}).get("name", "")
+    hs = event.get("homeScore", {})
+    as_ = event.get("awayScore", {})
+    sets_home = hs.get("current", 0) or 0
+    sets_away = as_.get("current", 0) or 0
+    if sets_home == sets_away:
+        return None, None
+    winner = home if sets_home > sets_away else away
+    # Sum all period (set) game scores for Total Games market
+    total = 0
+    for period in ("period1", "period2", "period3", "period4", "period5"):
+        h = hs.get(period)
+        a = as_.get(period)
+        if h is not None and a is not None:
+            try:
+                total += int(h) + int(a)
+            except (ValueError, TypeError):
+                pass
+    return winner, (total if total > 0 else None)
+
+
+def _match_one_name(a: str, b: str) -> bool:
+    """Fuzzy single-name match reused by both Sackmann and Sofascore resolvers."""
+    sn = _norm_name(a)
+    on = _norm_name(b)
+    if sn == on or _surname(a) == _surname(b):
+        return True
+    tok_a = {t for t in sn.split() if len(t) > 2}
+    tok_b = {t for t in on.split() if len(t) > 2}
+    return bool(tok_a & tok_b)
+
+
+def _update_from_sofascore() -> int:
+    """Resolve pending bets using Sofascore (free, real-time, all tour levels)."""
+    pending = _read(
+        "SELECT DISTINCT player1, player2, commence_time, match_id "
+        "FROM bets WHERE result = 'pending'")
+    if pending.empty:
+        return 0
+
+    # Collect unique dates to query (last 7 days max)
+    now = datetime.now(timezone.utc)
+    dates: set[str] = set()
+    for ct in pending["commence_time"]:
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            if (now - dt).days <= 7:
+                dates.add(dt.strftime("%Y-%m-%d"))
+        except Exception:
+            pass
+    # Always include today
+    dates.add(now.strftime("%Y-%m-%d"))
+
+    resolved = 0
+    done: set = set()
+
+    for date_str in sorted(dates):
+        for event in _fetch_sofascore_day(date_str):
+            sf_home = event.get("homeTeam", {}).get("name", "")
+            sf_away = event.get("awayTeam", {}).get("name", "")
+            winner_sf, total_games = _sofascore_winner_and_games(event)
+            if not winner_sf:
+                continue
+            for prow in pending.itertuples(index=False):
+                if prow.match_id in done:
+                    continue
+                if not _players_match(sf_home, sf_away, prow.player1, prow.player2):
+                    continue
+                db_winner = (prow.player1
+                             if _match_one_name(winner_sf, prow.player1)
+                             else prow.player2)
+                n = _resolve_match(prow.match_id, db_winner, total_games=total_games)
+                if n:
+                    resolved += n
+                    done.add(prow.match_id)
+                break
+
+    return resolved
+
+
+def update_from_sofascore() -> int:
+    """Resolve pending bets using Sofascore (free, real-time, all tour levels)."""
+    init_tracker_db()
+    return _update_from_sofascore()
+
+
 def update_results(api_key: str, days_from: int = 3) -> int:
     """Resolve pending bets: tries Odds API scores first, then Sackmann GitHub."""
     init_tracker_db()
