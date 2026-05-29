@@ -645,16 +645,29 @@ with tab_perf:
     # ---- manual refresh button
     col_btn, col_ts = st.columns([2, 5])
     if col_btn.button("🔄 Aggiorna risultati ora"):
-        with st.spinner("Verifico risultati..."):
-            if _key:
-                _n = update_results(_key, days_from=7)
+        if not _key:
+            st.error("❌ **ODDS_API_KEY non trovata.** Vai su Streamlit Cloud → App → Settings → Secrets e aggiungi:\n```\nODDS_API_KEY = \"la-tua-chiave\"\n```")
+        else:
+            with st.spinner("Verifico risultati via Odds API..."):
+                _n = update_results(_key, days_from=3)
                 st.session_state["_last_results_check"] = time.time()
+            if _n:
+                st.success(f"✅ Risolti {_n} nuovi risultati.")
             else:
-                st.warning("Odds API key non configurata nei Secrets di Streamlit.")
-                _n = 0
-        st.success(f"Risolti {_n} nuovi risultati." if _n
-                   else "Nessun nuovo risultato disponibile (partite non ancora nel sistema Odds API, o già tutte risolte).")
-        st.rerun()
+                # Mostra quante partite pending ci sono e con quali sport_key
+                from tvb.bet_tracker import get_pending_matches as _gpm
+                _pend = _gpm()
+                if _pend.empty:
+                    st.info("Nessuna partita pending nel database.")
+                else:
+                    _keys = ", ".join(_pend["sport_key"].unique().tolist())
+                    st.warning(
+                        f"0 risultati risolti. Le Odds API non hanno ancora i risultati "
+                        f"per queste partite oppure le partite non sono ancora segnate come "
+                        f"completate nel loro sistema.\n\n"
+                        f"**Sport key nel DB:** `{_keys}`\n\n"
+                        f"**Partite pending:** {len(_pend)}")
+            st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
                     st.session_state.get("_last_results_check", 0))

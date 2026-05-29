@@ -402,8 +402,8 @@ def _match_one_name(a: str, b: str) -> bool:
     return bool(tok_a & tok_b)
 
 
-def update_results(api_key: str, days_from: int = 7) -> int:
-    """Resolve pending bets via Odds API scores (days_from covers last N days)."""
+def update_results(api_key: str, days_from: int = 3) -> int:
+    """Resolve pending bets via Odds API scores (max daysFrom=3 on free tier)."""
     init_tracker_db()
     total = _update_from_odds_api(api_key, days_from)
     total += _update_from_sackmann()
