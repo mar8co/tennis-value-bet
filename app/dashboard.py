@@ -677,20 +677,28 @@ with tab_perf:
             st.dataframe(_pend[["player1", "player2", "commence_time", "sport_key"]],
                          use_container_width=True)
 
-        if _rapi_key and st.button("Test RapidAPI (risposta grezza)"):
+        if _rapi_key and st.button("Test RapidAPI risultati ieri"):
             import requests as _req
-            _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            from datetime import timedelta
+            _yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
             _host = "tennis-api-atp-wta-itf.p.rapidapi.com"
-            _r = _req.get(
-                f"https://{_host}/tennis/v2/atp/fixtures/{_today}",
-                headers={"X-RapidAPI-Key": _rapi_key,
-                         "X-RapidAPI-Host": _host},
-                timeout=15)
-            st.write(f"Status HTTP: {_r.status_code}")
-            try:
-                st.json(_r.json())
-            except Exception:
-                st.code(_r.text[:2000])
+            _hdrs = {"X-RapidAPI-Key": _rapi_key, "X-RapidAPI-Host": _host}
+            # prova endpoint results
+            for _url in [
+                f"https://{_host}/tennis/v2/atp/results/{_yesterday}",
+                f"https://{_host}/tennis/v2/atp/fixtures/{_yesterday}",
+            ]:
+                _r = _req.get(_url, headers=_hdrs, timeout=15)
+                st.write(f"`{_url}` → **{_r.status_code}**")
+                if _r.status_code == 200:
+                    _data = _r.json()
+                    _items = _data.get("data", _data) if isinstance(_data, dict) else _data
+                    if isinstance(_items, list) and _items:
+                        # mostra solo primi 2 con timeGame valorizzato
+                        _with_score = [m for m in _items if m.get("timeGame")]
+                        st.write(f"Totale: {len(_items)} | Con score: {len(_with_score)}")
+                        st.json((_with_score or _items)[:2])
+                    break
 
         if _key and st.button("Test Odds API scores (debug)"):
             _dbg = scores_debug(_key)
