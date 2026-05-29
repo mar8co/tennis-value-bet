@@ -682,7 +682,7 @@ with tab_perf:
             _today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             _host = "tennis-api-atp-wta-itf.p.rapidapi.com"
             _r = _req.get(
-                f"https://{_host}/tennis/v2/fixture/date/{_today}",
+                f"https://{_host}/tennis/v2/atp/fixtures/{_today}",
                 headers={"X-RapidAPI-Key": _rapi_key,
                          "X-RapidAPI-Host": _host},
                 timeout=15)

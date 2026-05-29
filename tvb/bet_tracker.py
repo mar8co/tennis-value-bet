@@ -415,27 +415,29 @@ _RAPIDAPI_HOST = "tennis-api-atp-wta-itf.p.rapidapi.com"
 
 
 def _fetch_rapidapi_day(date_str: str, rapidapi_key: str) -> list:
-    """Fetch fixtures for date_str via Tennis API - ATP WTA ITF on RapidAPI."""
-    try:
-        resp = requests.get(
-            f"https://{_RAPIDAPI_HOST}/tennis/v2/fixture/date/{date_str}",
-            headers={
-                "X-RapidAPI-Key": rapidapi_key,
-                "X-RapidAPI-Host": _RAPIDAPI_HOST,
-            },
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        if isinstance(data, list):
-            return data
-        for key in ("result", "results", "data", "fixtures", "response"):
-            if key in data and isinstance(data[key], list):
-                return data[key]
-    except Exception:
-        pass
-    return []
+    """Fetch ATP + WTA fixtures for date_str via Tennis API - ATP WTA ITF on RapidAPI."""
+    headers = {"X-RapidAPI-Key": rapidapi_key, "X-RapidAPI-Host": _RAPIDAPI_HOST}
+    matches = []
+    for tour in ("atp", "wta"):
+        try:
+            resp = requests.get(
+                f"https://{_RAPIDAPI_HOST}/tennis/v2/{tour}/fixtures/{date_str}",
+                headers=headers,
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            if isinstance(data, list):
+                matches.extend(data)
+            else:
+                for key in ("result", "results", "data", "fixtures", "response"):
+                    if key in data and isinstance(data[key], list):
+                        matches.extend(data[key])
+                        break
+        except Exception:
+            continue
+    return matches
 
 
 def _rapidapi_winner(match: dict) -> tuple[str | None, str | None, int | None]:
