@@ -781,10 +781,17 @@ with tab_perf:
                 _all_ids3 = _rd("SELECT DISTINCT match_id FROM bets WHERE result='pending' AND player1=:p1 AND player2=:p2",
                                   {"p1": _prow3.player1, "p2": _prow3.player2})
                 for _mid3 in _all_ids3["match_id"]:
-                    _n3 = _res(_mid3, _db_w3)
-                    _resolved3 += _n3
+                    try:
+                        _n3 = _res(_mid3, _db_w3)
+                        _resolved3 += _n3
+                        if _n3 == 0:
+                            # debug: see what's in the DB for this match_id
+                            _bets3 = _rd("SELECT id, market, selection, result FROM bets WHERE match_id=:m", {"m": _mid3})
+                            _log3.append(f"  ⚠️ {_mid3[:40]} → _res=0, bets={_bets3[['market','selection','result']].to_dict('records')[:2]}")
+                    except Exception as _ex3:
+                        _log3.append(f"  ❌ errore: {_ex3}")
                 if _all_ids3.shape[0] > 0:
-                    _log3.append(f"✅ {_prow3.player1} vs {_prow3.player2} → vincitore: {_db_w3} ({_all_ids3.shape[0]} match_id)")
+                    _log3.append(f"✅ {_prow3.player1} vs {_prow3.player2} → vincitore: {_db_w3} ({_all_ids3.shape[0]} match_id, risolti: {_n3})")
             st.write(f"**Risolti: {_resolved3}**")
             if _log3:
                 st.code("\n".join(_log3))
