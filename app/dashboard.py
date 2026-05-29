@@ -675,7 +675,7 @@ with tab_perf:
                     st.session_state.get("_last_results_check", 0))
     if _last_upd:
         _live_badge = "  🔴 **Live**" if _HAS_AUTOREFRESH else ""
-        col_ts.caption(
+        col_debug.caption(
             f"Ultimo aggiornamento: "
             f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}"
             f"{_live_badge}")
