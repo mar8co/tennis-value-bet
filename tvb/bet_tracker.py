@@ -192,7 +192,14 @@ def log_bet(player1: str, player2: str, commence_time: str, sport_key: str,
             edge: float, ev: float, kelly: float, stake: float = 10.0) -> bool:
     """Insert a bet if not already logged. Returns True if newly inserted."""
     init_tracker_db()
-    match_id = f"{player1}|{player2}|{commence_time}"
+    # Normalize commence_time to YYYY-MM-DDTHH to prevent duplicate entries
+    # when the same match is fetched multiple times with slightly different timestamps.
+    try:
+        _ct_norm = datetime.fromisoformat(
+            commence_time.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H")
+    except Exception:
+        _ct_norm = commence_time[:13]
+    match_id = f"{player1}|{player2}|{_ct_norm}"
     tour = "wta" if "wta" in sport_key.lower() else "atp"
     p = {"logged_at": datetime.now(timezone.utc).isoformat(),
          "match_id": match_id, "player1": player1, "player2": player2,
@@ -470,24 +477,46 @@ def _update_from_espn() -> int:
             pass
     dates.add(now.strftime("%Y-%m-%d"))
 
-    resolved = 0
-    done: set = set()
-
+    # Build a lookup: (norm_player1, norm_player2) → winner_name from ESPN
+    espn_results: dict[tuple, str] = {}
     for date_str in sorted(dates):
         for winner_espn, loser_espn in _fetch_espn_day(date_str):
-            for prow in pending.itertuples(index=False):
-                if prow.match_id in done:
-                    continue
-                if not _players_match(winner_espn, loser_espn, prow.player1, prow.player2):
-                    continue
-                db_winner = (prow.player1
-                             if _match_one_name(winner_espn, prow.player1)
-                             else prow.player2)
-                n = _resolve_match(prow.match_id, db_winner)
-                if n:
-                    resolved += n
-                    done.add(prow.match_id)
+            key1 = (_norm_name(winner_espn), _norm_name(loser_espn))
+            key2 = (_norm_name(loser_espn), _norm_name(winner_espn))
+            espn_results[key1] = winner_espn
+            espn_results[key2] = winner_espn
+
+    resolved = 0
+    # Group pending bets by (player1, player2) — resolve all match_ids for same players
+    seen_pairs: set[tuple] = set()
+    for prow in pending.itertuples(index=False):
+        pair_key = (_norm_name(prow.player1), _norm_name(prow.player2))
+        if pair_key in seen_pairs:
+            continue
+
+        winner_espn = None
+        # Try exact normalized key first, then fuzzy
+        for (wn, ln), w in espn_results.items():
+            if (_match_one_name(wn, prow.player1) and _match_one_name(ln, prow.player2)) or \
+               (_match_one_name(wn, prow.player2) and _match_one_name(ln, prow.player1)):
+                winner_espn = w
                 break
+
+        if not winner_espn:
+            continue
+
+        seen_pairs.add(pair_key)
+        db_winner = (prow.player1
+                     if _match_one_name(winner_espn, prow.player1)
+                     else prow.player2)
+
+        # Resolve ALL pending bets for this player pair (handles old duplicate match_ids)
+        all_ids = _read(
+            "SELECT DISTINCT match_id FROM bets "
+            "WHERE result='pending' AND player1=:p1 AND player2=:p2",
+            {"p1": prow.player1, "p2": prow.player2})
+        for mid in all_ids["match_id"]:
+            resolved += _resolve_match(mid, db_winner)
 
     return resolved
 
