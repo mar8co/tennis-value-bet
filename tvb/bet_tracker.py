@@ -268,11 +268,21 @@ def _surname(name: str) -> str:
 
 
 def _players_match(sw: str, sl: str, p1: str, p2: str) -> bool:
-    """True when Sackmann winner/loser surnames match both pending players."""
-    s1, s2 = _surname(sw), _surname(sl)
-    a, b = _surname(p1), _surname(p2)
-    return bool(s1 and s2 and a and b and
-                ((s1 == a and s2 == b) or (s1 == b and s2 == a)))
+    """True when Sackmann winner/loser names match both pending players."""
+    def _match_one(sack: str, odds: str) -> bool:
+        sn = _norm_name(sack)
+        on = _norm_name(odds)
+        if sn == on:
+            return True
+        if _surname(sack) == _surname(odds):
+            return True
+        # Any shared token longer than 2 chars (avoids matching on initials)
+        sack_tok = {t for t in sn.split() if len(t) > 2}
+        odds_tok = {t for t in on.split() if len(t) > 2}
+        return bool(sack_tok & odds_tok)
+
+    return ((_match_one(sw, p1) and _match_one(sl, p2)) or
+            (_match_one(sw, p2) and _match_one(sl, p1)))
 
 
 def _total_from_score(score: str) -> int | None:
@@ -289,24 +299,48 @@ def _total_from_score(score: str) -> int | None:
 
 
 def _sackmann_recent(tour: str) -> pd.DataFrame:
-    """Download current-year Sackmann CSV; cached for 1 h to save bandwidth."""
+    """Download Sackmann CSVs (main tour + challenger/qual); cached 1 h."""
     cached = _SACK_CACHE.get(tour)
     if cached:
         ts, df = cached
         if (datetime.now(timezone.utc) - ts).total_seconds() < 3600:
             return df
-    year = datetime.now(timezone.utc).year
-    url = f"{SACKMANN_REPOS[tour]}/{tour}_matches_{year}.csv"
-    try:
-        df = pd.read_csv(url, usecols=lambda c: c in
-                         {"tourney_date", "winner_name", "loser_name", "score"})
-        cutoff = int(
-            (datetime.now(timezone.utc) - timedelta(days=21)).strftime("%Y%m%d"))
-        df = df[pd.to_numeric(df["tourney_date"], errors="coerce") >= cutoff]
-        df = df.dropna(subset=["winner_name", "loser_name"]).reset_index(drop=True)
-    except Exception:
-        df = pd.DataFrame()
-    _SACK_CACHE[tour] = (datetime.now(timezone.utc), df)
+
+    now = datetime.now(timezone.utc)
+    year = now.year
+    prev = year - 1
+    cutoff = int((now - timedelta(days=90)).strftime("%Y%m%d"))
+
+    base = SACKMANN_REPOS[tour]
+    if tour == "atp":
+        urls = [
+            f"{base}/atp_matches_{year}.csv",
+            f"{base}/atp_matches_qual_chall_{year}.csv",
+            f"{base}/atp_matches_{prev}.csv",
+            f"{base}/atp_matches_qual_chall_{prev}.csv",
+        ]
+    else:
+        urls = [
+            f"{base}/wta_matches_{year}.csv",
+            f"{base}/wta_matches_qual_itf_{year}.csv",
+            f"{base}/wta_matches_{prev}.csv",
+            f"{base}/wta_matches_qual_itf_{prev}.csv",
+        ]
+
+    frames = []
+    for url in urls:
+        try:
+            part = pd.read_csv(url, usecols=lambda c: c in
+                               {"tourney_date", "winner_name", "loser_name", "score"})
+            part = part[pd.to_numeric(part["tourney_date"], errors="coerce") >= cutoff]
+            part = part.dropna(subset=["winner_name", "loser_name"])
+            if not part.empty:
+                frames.append(part)
+        except Exception:
+            continue
+
+    df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    _SACK_CACHE[tour] = (now, df)
     return df
 
 
@@ -335,8 +369,17 @@ def _update_from_sackmann() -> int:
                     continue
                 if not _players_match(sw, sl, prow.player1, prow.player2):
                     continue
+                # Identify which DB player is the winner using the same
+                # fuzzy logic as _players_match (not just surname equality).
+                def _match_one_name(sack: str, odds: str) -> bool:
+                    sn = _norm_name(sack); on = _norm_name(odds)
+                    if sn == on or _surname(sack) == _surname(odds):
+                        return True
+                    tok_s = {t for t in sn.split() if len(t) > 2}
+                    tok_o = {t for t in on.split() if len(t) > 2}
+                    return bool(tok_s & tok_o)
                 db_winner = (prow.player1
-                             if _surname(sw) == _surname(prow.player1)
+                             if _match_one_name(sw, prow.player1)
                              else prow.player2)
                 n = _resolve_match(prow.match_id, db_winner, total_games=tg)
                 if n:
@@ -352,6 +395,17 @@ def update_results(api_key: str, days_from: int = 3) -> int:
     total = _update_from_odds_api(api_key, days_from)
     total += _update_from_sackmann()
     return total
+
+
+def update_from_sackmann() -> int:
+    """Resolve pending bets using Sackmann GitHub data only (free, no API quota)."""
+    init_tracker_db()
+    return _update_from_sackmann()
+
+
+def clear_sackmann_cache() -> None:
+    """Force re-download of Sackmann CSVs on next call."""
+    _SACK_CACHE.clear()
 
 
 def _update_from_odds_api(api_key: str, days_from: int) -> int:
