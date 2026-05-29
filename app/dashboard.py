@@ -71,10 +71,6 @@ except Exception:
     def update_from_sackmann(): return 0  # type: ignore[misc]
     def clear_sackmann_cache(): pass  # type: ignore[misc]
 
-try:
-    from tvb.bet_tracker import update_from_sofascore
-except Exception:
-    def update_from_sofascore(): return 0  # type: ignore[misc]
 
 try:
     from streamlit_autorefresh import st_autorefresh as _st_autorefresh
@@ -650,14 +646,14 @@ with tab_perf:
     col_btn, col_ts = st.columns([2, 5])
     if col_btn.button("🔄 Aggiorna risultati ora"):
         with st.spinner("Verifico risultati..."):
-            # 1. Sofascore: gratis, real-time, copre tutti i livelli
-            _n = update_from_sofascore()
-            # 2. Odds API come fonte aggiuntiva (se configurata)
             if _key:
-                _n += update_results(_key)
+                _n = update_results(_key, days_from=7)
                 st.session_state["_last_results_check"] = time.time()
+            else:
+                st.warning("Odds API key non configurata nei Secrets di Streamlit.")
+                _n = 0
         st.success(f"Risolti {_n} nuovi risultati." if _n
-                   else "Nessun nuovo risultato disponibile.")
+                   else "Nessun nuovo risultato disponibile (partite non ancora nel sistema Odds API, o già tutte risolte).")
         st.rerun()
 
     _last_upd = max(st.session_state.get("_last_sackmann_check", 0),
