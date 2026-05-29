@@ -644,14 +644,13 @@ with tab_perf:
     # ---- manual refresh button
     col_btn, col_ts = st.columns([2, 5])
     if col_btn.button("🔄 Aggiorna risultati ora"):
-        clear_sackmann_cache()
-        with st.spinner("Verifico risultati..."):
+        with st.spinner("Verifico risultati via Odds API..."):
             if _key:
                 _n = update_results(_key)
                 st.session_state["_last_results_check"] = time.time()
             else:
-                _n = update_from_sackmann()
-            st.session_state["_last_sackmann_check"] = time.time()
+                st.warning("Odds API key non configurata.")
+                _n = 0
         st.success(f"Risolti {_n} nuovi risultati." if _n
                    else "Nessun nuovo risultato disponibile.")
         st.rerun()

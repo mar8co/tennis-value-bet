@@ -1,18 +1,13 @@
-"""Nightly result updater — run as a scheduled task (Windows Task Scheduler).
+"""Nightly result updater — runs via GitHub Actions every night at 01:00 UTC.
 
-Usage:
-    python scripts/update_results_nightly.py
-
-Schedule suggestion: every night at 23:59 (or later, e.g. 01:00 to let
-Sackmann CSV propagate — Sackmann typically lags 12-24 h after match end).
+Uses only Sackmann GitHub data (free, no API quota).
+Odds API updates are triggered manually from the dashboard.
 """
 import logging
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-# Allow imports from the project root regardless of working directory.
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -38,7 +33,6 @@ def main() -> None:
             clear_sackmann_cache,
             init_tracker_db,
             update_from_sackmann,
-            update_results,
         )
     except Exception as exc:
         log.error("Failed to import bet_tracker: %s", exc)
@@ -46,39 +40,23 @@ def main() -> None:
 
     db_url = os.environ.get("DATABASE_URL", "")
     if db_url:
-        log.info("DATABASE_URL scheme: %s", db_url.split("://")[0] if "://" in db_url else f"NO SCHEME — starts with: {db_url[:30]!r}")
+        scheme = db_url.split("://")[0] if "://" in db_url else f"NO SCHEME — starts with: {db_url[:30]!r}"
+        log.info("DATABASE_URL scheme: %s", scheme)
     else:
         log.info("DATABASE_URL not set — using local SQLite")
 
     init_tracker_db()
-
-    # Force fresh download from Sackmann GitHub (ignore 1-hour cache).
     clear_sackmann_cache()
 
-    # 1. Try Sackmann GitHub first (free, no quota).
     log.info("Fetching results from Sackmann GitHub...")
     try:
-        n_sack = update_from_sackmann()
-        log.info("Sackmann: %d bet(s) resolved.", n_sack)
+        n = update_from_sackmann()
+        log.info("Sackmann: %d bet(s) resolved.", n)
     except Exception as exc:
         log.warning("Sackmann update failed: %s", exc)
-        n_sack = 0
+        n = 0
 
-    # 2. Try The Odds API scores endpoint if an API key is configured.
-    api_key = os.environ.get("ODDS_API_KEY", "")
-    n_api = 0
-    if api_key:
-        log.info("Fetching results from The Odds API...")
-        try:
-            n_api = update_results(api_key)
-            log.info("Odds API: %d bet(s) resolved.", n_api)
-        except Exception as exc:
-            log.warning("Odds API update failed: %s", exc)
-    else:
-        log.info("ODDS_API_KEY not set — skipping Odds API step.")
-
-    total = n_sack + n_api
-    log.info("=== Done: %d total bet(s) resolved ===", total)
+    log.info("=== Done: %d total bet(s) resolved ===", n)
 
 
 if __name__ == "__main__":
