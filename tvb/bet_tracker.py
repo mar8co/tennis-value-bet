@@ -192,13 +192,13 @@ def log_bet(player1: str, player2: str, commence_time: str, sport_key: str,
             edge: float, ev: float, kelly: float, stake: float = 10.0) -> bool:
     """Insert a bet if not already logged. Returns True if newly inserted."""
     init_tracker_db()
-    # Normalize commence_time to YYYY-MM-DDTHH to prevent duplicate entries
-    # when the same match is fetched multiple times with slightly different timestamps.
+    # Normalize commence_time to YYYY-MM-DD (date only) to prevent duplicates
+    # when the Odds API changes a match's scheduled hour between fetches.
     try:
         _ct_norm = datetime.fromisoformat(
-            commence_time.replace("Z", "+00:00")).strftime("%Y-%m-%dT%H")
+            commence_time.replace("Z", "+00:00")).strftime("%Y-%m-%d")
     except Exception:
-        _ct_norm = commence_time[:13]
+        _ct_norm = commence_time[:10]
     match_id = f"{player1}|{player2}|{_ct_norm}"
     tour = "wta" if "wta" in sport_key.lower() else "atp"
     p = {"logged_at": datetime.now(timezone.utc).isoformat(),
@@ -281,14 +281,16 @@ def _players_match(sw: str, sl: str, p1: str, p2: str) -> bool:
     def _match_one(sack: str, odds: str) -> bool:
         sn = _norm_name(sack)
         on = _norm_name(odds)
-        if sn == on:
+        if sn == on or _surname(sack) == _surname(odds):
             return True
-        if _surname(sack) == _surname(odds):
-            return True
-        # Any shared token longer than 2 chars (avoids matching on initials)
         sack_tok = {t for t in sn.split() if len(t) > 2}
         odds_tok = {t for t in on.split() if len(t) > 2}
-        return bool(sack_tok & odds_tok)
+        common = sack_tok & odds_tok
+        if not common:
+            return False
+        sur_s = sn.split()[-1] if sn else ""
+        sur_o = on.split()[-1] if on else ""
+        return sur_s in common or sur_o in common
 
     return ((_match_one(sw, p1) and _match_one(sl, p2)) or
             (_match_one(sw, p2) and _match_one(sl, p1)))
@@ -386,7 +388,12 @@ def _update_from_sackmann() -> int:
                         return True
                     tok_s = {t for t in sn.split() if len(t) > 2}
                     tok_o = {t for t in on.split() if len(t) > 2}
-                    return bool(tok_s & tok_o)
+                    common = tok_s & tok_o
+                    if not common:
+                        return False
+                    sur_s = sn.split()[-1] if sn else ""
+                    sur_o = on.split()[-1] if on else ""
+                    return sur_s in common or sur_o in common
                 db_winner = (prow.player1
                              if _match_one_name(sw, prow.player1)
                              else prow.player2)
@@ -399,14 +406,26 @@ def _update_from_sackmann() -> int:
 
 
 def _match_one_name(a: str, b: str) -> bool:
-    """Fuzzy single-name match."""
+    """Fuzzy single-name match.
+
+    A shared token (>2 chars) qualifies only if it is the surname (last token)
+    of at least one of the two names. This prevents common first names like
+    'carlos', 'juan', 'maria' from causing false positives between two
+    completely different players who share a first name.
+    """
     sn = _norm_name(a)
     on = _norm_name(b)
     if sn == on or _surname(a) == _surname(b):
         return True
     tok_a = {t for t in sn.split() if len(t) > 2}
     tok_b = {t for t in on.split() if len(t) > 2}
-    return bool(tok_a & tok_b)
+    common = tok_a & tok_b
+    if not common:
+        return False
+    # Only accept if the shared token is the surname of at least one player
+    sur_a = sn.split()[-1] if sn else ""
+    sur_b = on.split()[-1] if on else ""
+    return sur_a in common or sur_b in common
 
 
 def update_results(api_key: str, days_from: int = 3) -> int:
@@ -421,13 +440,16 @@ def update_results(api_key: str, days_from: int = 3) -> int:
 _ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/tennis"
 
 
-def _fetch_espn_day(date_str: str) -> list[tuple[str, str]]:
+def _fetch_espn_day(date_str: str) -> list[tuple[str, str, int | None]]:
     """
-    Return list of (winner_name, loser_name) for all finished tennis matches
-    on date_str (YYYY-MM-DD) from ESPN, covering ATP + WTA.
+    Return list of (winner_name, loser_name, total_games) for all finished
+    tennis matches on date_str (YYYY-MM-DD) from ESPN, covering ATP + WTA.
+    total_games is the sum of all games played across all sets (or None if
+    linescores are unavailable).
     """
     date_nodash = date_str.replace("-", "")
     results = []
+    seen: set[tuple[str, str]] = set()
     for tour in ("atp", "wta"):
         try:
             resp = requests.get(
@@ -440,19 +462,41 @@ def _fetch_espn_day(date_str: str) -> list[tuple[str, str]]:
                 continue
             data = resp.json()
             for event in data.get("events", []):
+                # Support both groupings→competitions and direct competitions
+                competitions: list = []
                 for grp in event.get("groupings", []):
-                    for comp in grp.get("competitions", []):
-                        competitors = comp.get("competitors", [])
-                        if len(competitors) < 2:
-                            continue
-                        winner = next((c for c in competitors if c.get("winner")), None)
-                        loser  = next((c for c in competitors if not c.get("winner")), None)
-                        if not winner or not loser:
-                            continue
-                        w_name = winner.get("athlete", {}).get("displayName", "")
-                        l_name = loser.get("athlete", {}).get("displayName", "")
-                        if w_name and l_name:
-                            results.append((w_name, l_name))
+                    competitions.extend(grp.get("competitions", []))
+                if not competitions:
+                    competitions = event.get("competitions", [])
+                for comp in competitions:
+                    status = comp.get("status", {}).get("type", {}).get("name", "")
+                    if status != "STATUS_FINAL":
+                        continue
+                    competitors = comp.get("competitors", [])
+                    if len(competitors) < 2:
+                        continue
+                    winner = next((c for c in competitors if c.get("winner")), None)
+                    loser  = next((c for c in competitors if not c.get("winner")), None)
+                    if not winner or not loser:
+                        continue
+                    w_name = (winner.get("athlete") or {}).get("displayName", "")
+                    l_name = (loser.get("athlete") or {}).get("displayName", "")
+                    if not w_name or not l_name:
+                        continue
+                    key = (w_name, l_name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    # Extract total_games from per-set linescores
+                    total_games: int | None = None
+                    try:
+                        w_ls = [ls.get("value", 0) for ls in winner.get("linescores", [])]
+                        l_ls = [ls.get("value", 0) for ls in loser.get("linescores", [])]
+                        if w_ls and l_ls and len(w_ls) == len(l_ls):
+                            total_games = int(sum(w_ls) + sum(l_ls))
+                    except Exception:
+                        pass
+                    results.append((w_name, l_name, total_games))
         except Exception:
             continue
     return results
@@ -477,29 +521,32 @@ def _update_from_espn() -> int:
             pass
     dates.add(now.strftime("%Y-%m-%d"))
 
-    # Build a lookup: (norm_player1, norm_player2) → winner_name from ESPN
-    espn_results: dict[tuple, str] = {}
+    # Build lookup: (norm_p1, norm_p2) → (espn_winner_name, total_games)
+    espn_results: dict[tuple, tuple[str, int | None]] = {}
     for date_str in sorted(dates):
-        for winner_espn, loser_espn in _fetch_espn_day(date_str):
+        for winner_espn, loser_espn, total_games in _fetch_espn_day(date_str):
             key1 = (_norm_name(winner_espn), _norm_name(loser_espn))
             key2 = (_norm_name(loser_espn), _norm_name(winner_espn))
-            espn_results[key1] = winner_espn
-            espn_results[key2] = winner_espn
+            # Keep first occurrence (earliest date wins)
+            if key1 not in espn_results:
+                espn_results[key1] = (winner_espn, total_games)
+            if key2 not in espn_results:
+                espn_results[key2] = (winner_espn, total_games)
 
     resolved = 0
-    # Group pending bets by (player1, player2) — resolve all match_ids for same players
     seen_pairs: set[tuple] = set()
     for prow in pending.itertuples(index=False):
         pair_key = (_norm_name(prow.player1), _norm_name(prow.player2))
         if pair_key in seen_pairs:
             continue
 
-        winner_espn = None
-        # Try exact normalized key first, then fuzzy
-        for (wn, ln), w in espn_results.items():
+        winner_espn: str | None = None
+        tg: int | None = None
+        for (wn, ln), (w, tg_val) in espn_results.items():
             if (_match_one_name(wn, prow.player1) and _match_one_name(ln, prow.player2)) or \
                (_match_one_name(wn, prow.player2) and _match_one_name(ln, prow.player1)):
                 winner_espn = w
+                tg = tg_val
                 break
 
         if not winner_espn:
@@ -510,13 +557,13 @@ def _update_from_espn() -> int:
                      if _match_one_name(winner_espn, prow.player1)
                      else prow.player2)
 
-        # Resolve ALL pending bets for this player pair (handles old duplicate match_ids)
+        # Resolve ALL pending bets for this player pair (handles duplicate match_ids)
         all_ids = _read(
             "SELECT DISTINCT match_id FROM bets "
             "WHERE result='pending' AND player1=:p1 AND player2=:p2",
             {"p1": prow.player1, "p2": prow.player2})
         for mid in all_ids["match_id"]:
-            resolved += _resolve_match(mid, db_winner)
+            resolved += _resolve_match(mid, db_winner, total_games=tg)
 
     return resolved
 
@@ -783,45 +830,59 @@ def _evaluate_bet(market: str, selection: str, winner: str,
 
 def void_unresolvable_bets() -> int:
     """
-    Mark pending bets for markets we can't auto-resolve (Handicap games,
-    Vincente 1° set, Tie-break, etc.) as 'void' when the match is over.
-    A bet is considered 'over' when at least one other bet on the same
-    match_id has already been resolved (won/lost).
+    Mark pending bets as 'void' in two cases:
+    1. The Match winner bet for the same match_id is already resolved (won/lost)
+       → void ALL remaining pending bets for that match (Total games, Handicap,
+       Vincente 1° set, Tie-break, and any Total games ESPN couldn't resolve).
+    2. ANY bet is still pending >72 h after commence_time (match is definitely
+       over — catches matches where name-matching failed entirely).
     Returns count of voided bets.
     """
     init_tracker_db()
-    # Find match_ids that have at least one resolved bet (match is over)
-    # but still have pending bets on non-resolvable markets
-    sql = """
-        SELECT b.id, b.market
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # Use strftime with Z suffix to match Odds API's commence_time format exactly.
+    cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=72)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+    # Case 1: Match winner resolved → void ALL other pending bets for same match_id
+    sql1 = """
+        SELECT b.id
         FROM bets b
         WHERE b.result = 'pending'
-          AND b.market NOT IN ('Match winner', 'Total games')
           AND EXISTS (
               SELECT 1 FROM bets b2
               WHERE b2.match_id = b.match_id
+                AND b2.market = 'Match winner'
                 AND b2.result IN ('won', 'lost')
           )
     """
-    pending_void = _read(sql)
-    if pending_void.empty:
-        return 0
+    # Case 2: any market pending >72h after commence_time
+    sql2 = """
+        SELECT b.id
+        FROM bets b
+        WHERE b.result = 'pending'
+          AND b.commence_time < :cutoff
+    """
+    ids_to_void: set[int] = set()
+    for sql, params in [(sql1, None), (sql2, {"cutoff": cutoff_iso})]:
+        df = _read(sql, params)
+        if not df.empty:
+            ids_to_void.update(int(i) for i in df["id"])
 
-    now = datetime.now(timezone.utc).isoformat()
     count = 0
-    for row in pending_void.itertuples(index=False):
+    for bid in ids_to_void:
         try:
             if _SA:
                 with _engine().begin() as conn:
                     conn.execute(
                         _sa_text("UPDATE bets SET result='void', profit=0, "
                                  "resolved_at=:ra WHERE id=:id"),
-                        {"ra": now, "id": int(row.id)})
+                        {"ra": now_iso, "id": bid})
             else:
                 with sqlite3.connect(DB_PATH) as conn:
                     conn.execute(
                         "UPDATE bets SET result='void', profit=0, resolved_at=? WHERE id=?",
-                        (now, int(row.id)))
+                        (now_iso, bid))
             count += 1
         except Exception:
             pass

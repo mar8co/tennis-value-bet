@@ -640,17 +640,32 @@ with tab_perf:
             "redeploy. Per uno storico permanente aggiungi `DATABASE_URL` nei "
             "*Secrets* dell'app (es. Supabase o Neon — entrambi gratuiti).")
 
+    # Auto-refresh ogni 5 minuti per risultati live
+    if _HAS_AUTOREFRESH:
+        _st_autorefresh(interval=5 * 60 * 1000, key="_autorefresh_perf")
+
     _now = time.time()
     _key = _api_key()
 
-    # Ogni ora: Sackmann GitHub (gratuito, nessuna quota consumata)
+    # Ogni 5 minuti: ESPN (real-time, gratuito) + Sackmann GitHub (fallback)
     _last_sack = st.session_state.get("_last_sackmann_check", 0)
-    if (_now - _last_sack) > 3600:
+    if (_now - _last_sack) > 300:
+        _auto_resolved = 0
+        try:
+            _espn_auto = update_from_espn()
+            _auto_resolved += _espn_auto
+        except Exception:
+            _espn_auto = 0
         _sack_n = update_from_sackmann()
+        _auto_resolved += _sack_n
+        try:
+            _void_auto = void_unresolvable_bets()
+        except Exception:
+            _void_auto = 0
         st.session_state["_last_sackmann_check"] = _now
-        if _sack_n:
-            st.toast(f"✅ {_sack_n} risultat{'o' if _sack_n == 1 else 'i'} "
-                     f"aggiornati automaticamente.")
+        if _auto_resolved:
+            st.toast(f"✅ {_auto_resolved} risultat{'o' if _auto_resolved == 1 else 'i'} "
+                     f"aggiornati automaticamente (ESPN: {_espn_auto}, Sackmann: {_sack_n}).")
 
     # ---- manual refresh button
     if st.button("🔄 Aggiorna risultati ora"):
@@ -718,19 +733,26 @@ with tab_perf:
                 st.session_state["_has_duplicates"] = True
 
         if st.session_state.get("_has_duplicates"):
-            if st.button("🗑️ Elimina duplicati (mantieni solo il primo per ogni match)"):
+            if st.button("🗑️ Elimina duplicati (mantieni il record risolto, o l'ultimo)"):
                 from tvb.bet_tracker import _engine as _eng
                 from sqlalchemy import text as _sqlt
-                with _eng().begin() as _conn:
-                    _conn.execute(_sqlt("""
-                        DELETE FROM bets WHERE id NOT IN (
-                            SELECT MIN(id) FROM bets
-                            GROUP BY player1, player2,
-                                     substr(commence_time, 1, 10),
-                                     market, selection
+                # COALESCE: prefer the resolved record; fall back to MAX(id).
+                # Works on both SQLite and PostgreSQL.
+                _keep_sql = """
+                    DELETE FROM bets WHERE id NOT IN (
+                        SELECT COALESCE(
+                            MAX(CASE WHEN result IN ('won','lost','void') THEN id END),
+                            MAX(id)
                         )
-                    """))
-                st.success("Duplicati eliminati.")
+                        FROM bets
+                        GROUP BY player1, player2,
+                                 substr(commence_time, 1, 10),
+                                 market, selection
+                    )
+                """
+                with _eng().begin() as _conn:
+                    _conn.execute(_sqlt(_keep_sql))
+                st.success("Duplicati eliminati (record risolti preservati).")
                 st.session_state.pop("_has_duplicates", None)
                 st.rerun()
 
