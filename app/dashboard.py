@@ -707,6 +707,70 @@ with tab_perf:
         st.caption(f"Ultimo aggiornamento: "
                    f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
 
+    # ---- audit risoluzioni recenti
+    with st.expander("🔍 Verifica risoluzioni recenti", expanded=False):
+        st.caption(
+            "Mostra le bet risolte nelle ultime 48 ore con il vincitore assegnato. "
+            "Controlla che il vincitore sia corretto — se sbagliato, usa il form "
+            "'Inserisci risultati in blocco' per correggere manualmente.")
+        from tvb.bet_tracker import _read as _bt_read
+        from datetime import timedelta
+        _cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")
+        _recent = _bt_read(
+            "SELECT player1, player2, "
+            "substr(commence_time, 1, 10) as data, "
+            "market, selection, result, profit, resolved_at, odds, match_id "
+            "FROM bets "
+            "WHERE result IN ('won','lost','void') "
+            "AND resolved_at >= :cutoff "
+            "ORDER BY resolved_at DESC",
+            {"cutoff": _cutoff_48h}
+        )
+        if _recent.empty:
+            st.info("Nessuna bet risolta nelle ultime 48 ore.")
+        else:
+            # Raggruppa per match (player1 vs player2, data)
+            _recent["Partita"] = _recent["player1"] + " vs " + _recent["player2"]
+            _recent["Data"] = _recent["data"]
+            _recent["Mercato"] = _recent["market"]
+            _recent["Selezione"] = _recent["selection"]
+            _recent["Quota"] = _recent["odds"].round(2)
+            _recent["Risultato"] = _recent["result"].map(
+                {"won": "🟢 vinta", "lost": "🔴 persa", "void": "⚪ void"})
+            _recent["P&L"] = _recent["profit"].fillna(0).map(lambda x: f"€ {x:+.2f}")
+            _recent["Risolto alle"] = _recent["resolved_at"].str[:16].str.replace("T", " ")
+
+            _cols = ["Data", "Partita", "Mercato", "Selezione",
+                     "Quota", "Risultato", "P&L", "Risolto alle"]
+            st.dataframe(_recent[_cols], use_container_width=True, hide_index=True)
+
+            # Sommario per match
+            st.markdown("**Riepilogo per partita:**")
+            _by_match = _recent.groupby(["Partita", "Data"]).agg(
+                n_won=("result", lambda x: (x == "won").sum()),
+                n_lost=("result", lambda x: (x == "lost").sum()),
+                n_void=("result", lambda x: (x == "void").sum()),
+                pnl=("profit", lambda x: x.fillna(0).sum()),
+            ).reset_index()
+            _by_match["P&L totale"] = _by_match["pnl"].map(lambda x: f"€ {x:+.2f}")
+            st.dataframe(
+                _by_match[["Data", "Partita", "n_won", "n_lost", "n_void", "P&L totale"]].rename(
+                    columns={"n_won": "Vinte", "n_lost": "Perse", "n_void": "Void"}),
+                use_container_width=True, hide_index=True)
+
+            _tot_pnl = _recent["profit"].fillna(0).sum()
+            if _tot_pnl >= 0:
+                st.success(f"P&L ultime 48h: **€ {_tot_pnl:+.2f}**")
+            else:
+                st.error(f"P&L ultime 48h: **€ {_tot_pnl:+.2f}**")
+
+            st.caption(
+                "⚠️ Se noti una risoluzione errata (es. vincitore sbagliato), "
+                "usa il form **'Inserisci risultati in blocco'** qui sotto per correggere. "
+                "Per correggere una singola bet, contatta il supporto o usa "
+                "il DB direttamente.")
+
     # ---- audit duplicati
     with st.expander("🔎 Audit dati — cerca duplicati", expanded=False):
         st.caption("Verifica se la stessa partita è stata loggata più volte con match_id diversi.")
