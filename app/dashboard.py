@@ -708,166 +708,173 @@ with tab_perf:
                    f"{datetime.fromtimestamp(_last_upd, tz=_LOCAL_TZ).strftime('%H:%M:%S')}")
 
     # ---- audit automatico risoluzioni
-    with st.expander("🔍 Audit automatico risoluzioni", expanded=False):
-        st.caption(
-            "Incrocia ogni bet risolta nelle ultime 48h con i risultati ESPN in tempo reale. "
-            "Segnala automaticamente eventuali errori di risoluzione.")
+    with st.expander("🔍 Audit automatico risoluzioni", expanded=True):
+        from tvb.bet_tracker import (
+            _read as _bt_read, _fetch_espn_day, _norm_name, _match_one_name
+        )
+        from datetime import timedelta
 
-        if st.button("▶ Esegui audit automatico", type="primary"):
-            from tvb.bet_tracker import (
-                _read as _bt_read, _fetch_espn_day,
-                _norm_name, _match_one_name, manual_resolve_bet
-            )
-            from datetime import timedelta
+        # ── Riepilogo per giorno ────────────────────────────────────────────
+        st.markdown("#### Riepilogo P&L per giorno di partita")
+        _daily = _bt_read("""
+            SELECT substr(commence_time, 1, 10) as giorno,
+                   SUM(CASE WHEN result='won'  THEN 1 ELSE 0 END) as vinte,
+                   SUM(CASE WHEN result='lost' THEN 1 ELSE 0 END) as perse,
+                   SUM(CASE WHEN result='void' THEN 1 ELSE 0 END) as void,
+                   SUM(CASE WHEN result='pending' THEN 1 ELSE 0 END) as pending,
+                   ROUND(SUM(CASE WHEN result IN ('won','lost')
+                             THEN profit ELSE 0 END), 2) as pnl
+            FROM bets
+            GROUP BY giorno
+            ORDER BY giorno DESC
+        """)
+        if not _daily.empty:
+            _daily["P&L"] = _daily["pnl"].map(lambda x: f"€ {x:+.2f}")
+            st.dataframe(
+                _daily[["giorno","vinte","perse","void","pending","P&L"]].rename(
+                    columns={"giorno": "Data", "vinte": "Vinte", "perse": "Perse",
+                             "void": "Void", "pending": "Pending"}),
+                use_container_width=True, hide_index=True)
 
-            _cutoff_48h = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
+        st.divider()
+
+        # ── Audit ESPN: confronto vincitori DB vs ESPN ──────────────────────
+        st.markdown("#### Verifica vincitori: DB vs ESPN (ultime 72h)")
+        st.caption("Confronta chi ha vinto secondo il DB con chi dice ESPN. "
+                   "Nessuna modifica automatica — correzione solo manuale e controllata.")
+
+        _audit_days = st.slider("Giorni da analizzare", 1, 7, 3)
+        if st.button("▶ Esegui audit vincitori"):
+            _cutoff_audit = (datetime.now(timezone.utc) - timedelta(days=_audit_days)).strftime(
                 "%Y-%m-%dT%H:%M:%SZ")
 
-            # Fetch bet Match winner risolte (won/lost) nelle ultime 48h
-            _resolved = _bt_read(
-                "SELECT id, player1, player2, market, selection, result, "
-                "profit, odds, commence_time, resolved_at "
+            # Tutte le bet Match winner risolte (won/lost) nel periodo
+            _mw_resolved = _bt_read(
+                "SELECT DISTINCT player1, player2, "
+                "substr(commence_time,1,10) as data, match_id, "
+                "selection, result, profit "
                 "FROM bets "
-                "WHERE market = 'Match winner' "
-                "  AND result IN ('won','lost') "
-                "  AND resolved_at >= :cutoff "
-                "ORDER BY resolved_at DESC",
-                {"cutoff": _cutoff_48h}
+                "WHERE market='Match winner' AND result IN ('won','lost') "
+                "AND commence_time >= :cutoff "
+                "ORDER BY commence_time DESC",
+                {"cutoff": _cutoff_audit}
             )
-
-            if _resolved.empty:
-                st.info("Nessuna bet Match winner risolta nelle ultime 48h da verificare.")
-                st.stop()
-
-            # Fetch ESPN per tutte le date coinvolte
-            _dates_audit = set(str(ct)[:10] for ct in _resolved["commence_time"])
-            _dates_audit.add(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-            _espn_audit: dict[tuple, str] = {}
-            with st.spinner("Scarico risultati ESPN..."):
-                for _d in sorted(_dates_audit):
-                    for _ew, _el, _etg in _fetch_espn_day(_d):
-                        _k1 = (_norm_name(_ew), _norm_name(_el))
-                        _k2 = (_norm_name(_el), _norm_name(_ew))
-                        if _k1 not in _espn_audit:
-                            _espn_audit[_k1] = _ew
-                        if _k2 not in _espn_audit:
-                            _espn_audit[_k2] = _ew
-
-            # Per ogni match, trova il vincitore ESPN e confronta con il DB
-            _audit_rows = []
-            _seen_pairs = set()
-            for _row in _resolved.itertuples(index=False):
-                _pair = (_norm_name(_row.player1), _norm_name(_row.player2))
-                if _pair in _seen_pairs:
-                    continue
-                _seen_pairs.add(_pair)
-
-                # Identifica il vincitore assegnato dal DB (la selezione "won")
-                _db_winner_rows = _bt_read(
-                    "SELECT selection FROM bets "
-                    "WHERE player1=:p1 AND player2=:p2 "
-                    "  AND market='Match winner' AND result='won' "
-                    "  AND resolved_at >= :cutoff LIMIT 1",
-                    {"p1": _row.player1, "p2": _row.player2, "cutoff": _cutoff_48h}
-                )
-                _db_winner = _db_winner_rows["selection"].iloc[0] if not _db_winner_rows.empty else "?"
-
-                # Trova il vincitore ESPN
-                _espn_winner = None
-                for (_wn, _ln), _w in _espn_audit.items():
-                    if (_match_one_name(_wn, _row.player1) and _match_one_name(_ln, _row.player2)) or \
-                       (_match_one_name(_wn, _row.player2) and _match_one_name(_ln, _row.player1)):
-                        _espn_winner = _w
-                        break
-
-                if _espn_winner is None:
-                    _status = "⚠️ Non trovato in ESPN"
-                    _ok = None
-                else:
-                    # Il vincitore ESPN corrisponde al vincitore nel DB?
-                    _espn_maps_to = (_row.player1
-                                     if _match_one_name(_espn_winner, _row.player1)
-                                     else _row.player2)
-                    _ok = (_espn_maps_to == _db_winner)
-                    _status = "✅ Corretto" if _ok else "❌ ERRORE — vincitore sbagliato!"
-
-                _audit_rows.append({
-                    "Data": str(_row.commence_time)[:10],
-                    "Partita": f"{_row.player1} vs {_row.player2}",
-                    "Vincitore nel DB": _db_winner,
-                    "Vincitore ESPN": _espn_winner or "—",
-                    "Stato": _status,
-                    "_ok": _ok,
-                    "_p1": _row.player1,
-                    "_p2": _row.player2,
-                })
-
-            if not _audit_rows:
-                st.info("Nessuna partita da verificare.")
+            if _mw_resolved.empty:
+                st.info("Nessuna bet Match winner risolta nel periodo selezionato.")
             else:
-                _n_ok = sum(1 for r in _audit_rows if r["_ok"] is True)
-                _n_err = sum(1 for r in _audit_rows if r["_ok"] is False)
-                _n_unk = sum(1 for r in _audit_rows if r["_ok"] is None)
+                # Fetch ESPN per le date coinvolte
+                _audit_dates = set(_mw_resolved["data"].tolist())
+                _audit_dates.add(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                _espn_map: dict[tuple, str] = {}
+                with st.spinner(f"Scarico ESPN per {len(_audit_dates)} date..."):
+                    for _ad in sorted(_audit_dates):
+                        for _ew, _el, _ in _fetch_espn_day(_ad):
+                            _k1 = (_norm_name(_ew), _norm_name(_el))
+                            _k2 = (_norm_name(_el), _norm_name(_ew))
+                            if _k1 not in _espn_map:
+                                _espn_map[_k1] = _ew
+                            if _k2 not in _espn_map:
+                                _espn_map[_k2] = _ew
+
+                _rows = []
+                _seen = set()
+                for _r in _mw_resolved.itertuples(index=False):
+                    _pk = (_norm_name(_r.player1), _norm_name(_r.player2))
+                    if _pk in _seen:
+                        continue
+                    _seen.add(_pk)
+
+                    # Chi ha vinto secondo il DB?
+                    _won_row = _bt_read(
+                        "SELECT selection FROM bets WHERE match_id=:mid "
+                        "AND market='Match winner' AND result='won' LIMIT 1",
+                        {"mid": _r.match_id})
+                    _db_winner = (_won_row["selection"].iloc[0]
+                                  if not _won_row.empty else "— nessun won")
+
+                    # Chi ha vinto secondo ESPN?
+                    _espn_w = None
+                    for (_wn, _ln), _w in _espn_map.items():
+                        if ((_match_one_name(_wn, _r.player1) and
+                             _match_one_name(_ln, _r.player2)) or
+                            (_match_one_name(_wn, _r.player2) and
+                             _match_one_name(_ln, _r.player1))):
+                            _espn_w = _w
+                            break
+
+                    if _espn_w is None:
+                        _stato = "⚠️ non trovato ESPN"
+                        _ok = None
+                    else:
+                        _espn_to_db = (_r.player1
+                                       if _match_one_name(_espn_w, _r.player1)
+                                       else _r.player2)
+                        _ok = (_espn_to_db == _db_winner)
+                        _stato = "✅ ok" if _ok else "❌ ERRORE"
+
+                    _rows.append({
+                        "Data": _r.data,
+                        "Partita": f"{_r.player1} vs {_r.player2}",
+                        "Vincitore DB": _db_winner,
+                        "Vincitore ESPN": _espn_w or "—",
+                        "Stato": _stato,
+                        "match_id": _r.match_id,
+                    })
+
+                import pandas as _pd_a
+                _adf = _pd_a.DataFrame(_rows)
+                _n_ok  = (_adf["Stato"] == "✅ ok").sum()
+                _n_err = (_adf["Stato"] == "❌ ERRORE").sum()
+                _n_unk = _adf["Stato"].str.startswith("⚠️").sum()
 
                 if _n_err == 0:
-                    st.success(f"✅ Audit completato: {_n_ok} corrette, "
-                               f"{_n_unk} non trovate in ESPN.")
+                    st.success(f"✅ {_n_ok} corretti, {_n_unk} non trovati in ESPN.")
                 else:
-                    st.error(f"❌ Trovati {_n_err} errori su {len(_audit_rows)} partite!")
+                    st.error(f"❌ {_n_err} possibili errori su {len(_rows)} partite!")
 
-                import pandas as _pd_audit
-                _audit_df = _pd_audit.DataFrame([
-                    {k: v for k, v in r.items() if not k.startswith("_")}
-                    for r in _audit_rows
-                ])
-                st.dataframe(_audit_df, use_container_width=True, hide_index=True)
+                st.dataframe(_adf[["Data","Partita","Vincitore DB",
+                                   "Vincitore ESPN","Stato"]],
+                             use_container_width=True, hide_index=True)
 
-                # Offri correzione automatica per gli errori
-                _errors = [r for r in _audit_rows if r["_ok"] is False]
-                if _errors:
-                    st.warning(
-                        f"**{_n_err} partite risolte con il vincitore sbagliato.** "
-                        "Clicca il bottone sotto per correggerle automaticamente "
-                        "usando i risultati ESPN.")
-                    if st.button("🔧 Correggi automaticamente gli errori", type="primary"):
-                        from tvb.bet_tracker import resolve_match_manual, _read as _r2
-                        _fixed = 0
-                        for _err in _errors:
-                            # ESPN winner → db player name
-                            _espn_w = _err["Vincitore ESPN"]
-                            _correct_winner = (
-                                _err["_p1"]
-                                if _match_one_name(_espn_w, _err["_p1"])
-                                else _err["_p2"]
-                            )
-                            # Reset le bet a pending, poi risolvi col vincitore corretto
-                            _ids = _r2(
-                                "SELECT id FROM bets "
-                                "WHERE player1=:p1 AND player2=:p2 "
-                                "  AND market='Match winner'",
-                                {"p1": _err["_p1"], "p2": _err["_p2"]}
-                            )
-                            for _bid in _ids["id"]:
-                                try:
-                                    from tvb.bet_tracker import _engine as _eng2, _SA as _sa2
-                                    from sqlalchemy import text as _sqlt2
-                                    if _sa2:
-                                        with _eng2().begin() as _c:
-                                            _c.execute(_sqlt2(
-                                                "UPDATE bets SET result='pending', "
-                                                "profit=NULL, resolved_at=NULL "
-                                                "WHERE id=:id"
-                                            ), {"id": int(_bid)})
-                                except Exception:
-                                    pass
-                            _all_mids = _r2(
-                                "SELECT DISTINCT match_id FROM bets "
-                                "WHERE player1=:p1 AND player2=:p2",
-                                {"p1": _err["_p1"], "p2": _err["_p2"]}
-                            )
-                            for _mid in _all_mids["match_id"]:
-                                _fixed += resolve_match_manual(_mid, _correct_winner)
-                        st.success(f"✅ Corrette {_fixed} bet.")
+                # Correzione manuale sicura: una bet alla volta, per match_id specifico
+                if _n_err > 0:
+                    st.markdown("---")
+                    st.markdown("#### Correzione manuale (sicura)")
+                    st.caption(
+                        "Seleziona la partita con l'errore e imposta il vincitore corretto. "
+                        "Agisce solo sul match_id specifico, nessun reset globale.")
+                    _err_rows = _adf[_adf["Stato"] == "❌ ERRORE"]
+                    _sel_match = st.selectbox(
+                        "Partita da correggere",
+                        options=_err_rows["Partita"].tolist(),
+                        key="_audit_fix_match")
+                    _sel_row = _err_rows[_err_rows["Partita"] == _sel_match].iloc[0]
+                    _players = _sel_match.split(" vs ")
+                    _correct = st.selectbox(
+                        "Vincitore corretto",
+                        options=_players,
+                        key="_audit_fix_winner")
+                    _tg_corr = st.number_input(
+                        "Game totali (0 = non disponibile)",
+                        min_value=0, max_value=200, value=0,
+                        key="_audit_fix_tg")
+                    if st.button("✅ Applica correzione a questo match", type="primary"):
+                        from tvb.bet_tracker import (
+                            _engine as _eng_fix, _SA as _sa_fix,
+                            resolve_match_manual
+                        )
+                        from sqlalchemy import text as _sqlt_fix
+                        _mid_fix = _sel_row["match_id"]
+                        _tg_fix = int(_tg_corr) if _tg_corr > 0 else None
+                        # Reset solo i bet di questo match_id specifico
+                        if _sa_fix:
+                            with _eng_fix().begin() as _cf:
+                                _cf.execute(_sqlt_fix(
+                                    "UPDATE bets SET result='pending', profit=NULL, "
+                                    "resolved_at=NULL WHERE match_id=:mid"),
+                                    {"mid": _mid_fix})
+                        _n_fix = resolve_match_manual(_mid_fix, _correct, _tg_fix)
+                        st.success(f"✅ {_n_fix} bet corrette per match_id {_mid_fix[:40]}.")
                         st.rerun()
 
     # ---- audit duplicati
