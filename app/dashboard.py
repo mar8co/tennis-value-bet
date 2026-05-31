@@ -750,7 +750,7 @@ with tab_perf:
 
             # Tutte le bet Match winner risolte (won/lost) nel periodo
             _mw_resolved = _bt_read(
-                "SELECT DISTINCT player1, player2, "
+                "SELECT player1, player2, commence_time, "
                 "substr(commence_time,1,10) as data, match_id, "
                 "selection, result, profit "
                 "FROM bets "
@@ -759,6 +759,9 @@ with tab_perf:
                 "ORDER BY commence_time DESC",
                 {"cutoff": _cutoff_audit}
             )
+            # Deduplica per coppia giocatori+giorno (tieni prima occorrenza)
+            _mw_resolved = _mw_resolved.drop_duplicates(
+                subset=["player1", "player2", "data"])
             if _mw_resolved.empty:
                 st.info("Nessuna bet Match winner risolta nel periodo selezionato.")
             else:
