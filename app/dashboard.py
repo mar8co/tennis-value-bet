@@ -722,14 +722,14 @@ with tab_perf:
                    SUM(CASE WHEN result='lost' THEN 1 ELSE 0 END) as perse,
                    SUM(CASE WHEN result='void' THEN 1 ELSE 0 END) as void,
                    SUM(CASE WHEN result='pending' THEN 1 ELSE 0 END) as pending,
-                   ROUND(SUM(CASE WHEN result IN ('won','lost')
-                             THEN profit ELSE 0 END), 2) as pnl
+                   SUM(CASE WHEN result IN ('won','lost')
+                       THEN profit ELSE 0 END) as pnl
             FROM bets
             GROUP BY substr(commence_time, 1, 10)
             ORDER BY substr(commence_time, 1, 10) DESC
         """)
         if not _daily.empty:
-            _daily["P&L"] = _daily["pnl"].map(lambda x: f"€ {x:+.2f}")
+            _daily["P&L"] = _daily["pnl"].fillna(0).round(2).map(lambda x: f"€ {x:+.2f}")
             st.dataframe(
                 _daily[["giorno","vinte","perse","void","pending","P&L"]].rename(
                     columns={"giorno": "Data", "vinte": "Vinte", "perse": "Perse",
