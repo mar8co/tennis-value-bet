@@ -725,8 +725,8 @@ with tab_perf:
                    ROUND(SUM(CASE WHEN result IN ('won','lost')
                              THEN profit ELSE 0 END), 2) as pnl
             FROM bets
-            GROUP BY giorno
-            ORDER BY giorno DESC
+            GROUP BY substr(commence_time, 1, 10)
+            ORDER BY substr(commence_time, 1, 10) DESC
         """)
         if not _daily.empty:
             _daily["P&L"] = _daily["pnl"].map(lambda x: f"€ {x:+.2f}")
